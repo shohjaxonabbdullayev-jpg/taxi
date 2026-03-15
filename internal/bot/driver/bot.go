@@ -270,16 +270,17 @@ func sendOnOnlineLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatI
 func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotAPI, matchService *services.MatchService, assignmentService *services.AssignmentService, tripService *services.TripService) error {
 	log.Printf("driver bot: started @%s", bot.Self.UserName)
 
-	// Set command panel: /start, /status, /referral, /bonuslar, /leaderboard, /online, /offline.
-	if _, err := bot.Request(tgbotapi.NewSetMyCommands(
+	// Set command panel: /start, /status, /bonuslar, /referral, /leaderboard, /online, /offline.
+	driverCommands := tgbotapi.NewSetMyCommands(
 		tgbotapi.BotCommand{Command: "start", Description: "Botni boshlash"},
 		tgbotapi.BotCommand{Command: "status", Description: "Holat va balans"},
-		tgbotapi.BotCommand{Command: "referral", Description: "Do'stlarni taklif qilish"},
 		tgbotapi.BotCommand{Command: "bonuslar", Description: "Bonuslar va referral statistikasi"},
+		tgbotapi.BotCommand{Command: "referral", Description: "Do'stlarni taklif qilish"},
 		tgbotapi.BotCommand{Command: "leaderboard", Description: "Eng faol haydovchilar"},
 		tgbotapi.BotCommand{Command: "online", Description: "Onlayn bo'lish"},
 		tgbotapi.BotCommand{Command: "offline", Description: "Oflayn bo'lish"},
-	)); err != nil {
+	)
+	if _, err := bot.Request(driverCommands); err != nil {
 		log.Printf("driver bot: setMyCommands: %v", err)
 	}
 
@@ -805,7 +806,6 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	if shareLink != "" {
 		text += fmt.Sprintf("\n\n%s", shareLink)
 	}
-	text += "\n\n— Ushbu xabarni do'stlaringizga yuboring. Sizning statistikangiz: /bonuslar"
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
