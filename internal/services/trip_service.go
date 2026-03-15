@@ -332,6 +332,30 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 			}
 		}
 	}
+	// New user bonus: 80k so'm once when driver completes 5 successful trips. Notify pending count or reward added.
+	var fiveTripsBonusPaid int
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(five_trips_bonus_paid, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&fiveTripsBonusPaid)
+	tripsPendingForBonus := 0 // how many more trips until 5 (0 = already got bonus or not applicable)
+	if fiveTripsBonusPaid == 0 {
+		var finishedCount int64
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`, driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
+		if finishedCount >= 5 {
+			res, err := s.db.ExecContext(ctx, `UPDATE drivers SET balance = balance + 80000, five_trips_bonus_paid = 1 WHERE user_id = ?1`, driverUserID)
+			if err != nil {
+				log.Printf("trip_service: five_trips_bonus update failed (driver=%d): %v", driverUserID, err)
+			} else if nr, _ := res.RowsAffected(); nr > 0 && s.driverBot != nil {
+				var driverTgID int64
+				if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err == nil && driverTgID != 0 {
+					msg := tgbotapi.NewMessage(driverTgID, "🎉 Sizning 80 000 so'm mukofotingiz hisobingizga qo'shildi.")
+					if _, err := s.driverBot.Send(msg); err != nil {
+						log.Printf("trip_service: notify driver 80k bonus: %v", err)
+					}
+				}
+			}
+		} else {
+			tripsPendingForBonus = 5 - int(finishedCount)
+		}
+	}
 	// When InfiniteDriverBalance is false, deduct commission from normalized fare and record payment.
 	if s.cfg != nil && !s.cfg.InfiniteDriverBalance && fareAmount > 0 {
 		pc := 5
@@ -406,6 +430,16 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		m.ReplyMarkup = kb
 		if _, err := s.driverBot.Send(m); err != nil {
 			log.Printf("trip_service: notify driver finish: %v", err)
+		}
+		// Remind how many trips left until 80k so'm bonus (only if not yet received).
+		if tripsPendingForBonus > 0 && s.driverBot != nil {
+			pendingMsg := fmt.Sprintf("📊 Yana %d ta muvaffaqiyatli safar — 80 000 so'm mukofotingiz.", tripsPendingForBonus)
+			if tripsPendingForBonus == 1 {
+				pendingMsg = "📊 Yana 1 ta muvaffaqiyatli safar — 80 000 so'm mukofotingiz."
+			}
+			if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, pendingMsg)); err != nil {
+				log.Printf("trip_service: notify driver trips pending: %v", err)
+			}
 		}
 		// After trip finish: set driver inactive until next location. Do not set manual_offline so
 		// when the mini app sends location (or driver shares in bot), they become available again.
