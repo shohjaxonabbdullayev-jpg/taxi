@@ -115,7 +115,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 	}
 
 	notifRows, err := s.db.QueryContext(ctx, `
-		SELECT chat_id FROM request_notifications
+		SELECT chat_id, message_id FROM request_notifications
 		WHERE request_id = ?1 AND driver_user_id != ?2`,
 		requestID, driverUserID)
 	if err != nil {
@@ -124,12 +124,16 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 	defer notifRows.Close()
 	for notifRows.Next() {
 		var chatID int64
-		if err := notifRows.Scan(&chatID); err != nil {
+		var messageID int
+		if err := notifRows.Scan(&chatID, &messageID); err != nil {
 			continue
 		}
-		msg := tgbotapi.NewMessage(chatID, "So'rov allaqachon olindi")
-		if _, err := s.driverBot.Send(msg); err != nil {
-			log.Printf("assignment_service: notify driver %d: %v", chatID, err)
+		// Delete the order message instead of sending "So'rov allaqachon olindi".
+		if s.driverBot != nil && messageID != 0 {
+			del := tgbotapi.NewDeleteMessage(chatID, messageID)
+			if _, err := s.driverBot.Request(del); err != nil {
+				log.Printf("assignment_service: delete order message chat=%d msg=%d: %v", chatID, messageID, err)
+			}
 		}
 	}
 	return true, tripID, nil

@@ -434,9 +434,9 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 		// Remind how many trips left until 80k so'm bonus (only if not yet received).
 		if tripsPendingForBonus > 0 && s.driverBot != nil {
-			pendingMsg := fmt.Sprintf("📊 Yana %d ta muvaffaqiyatli safar — 80 000 so'm mukofotingiz.", tripsPendingForBonus)
+			pendingMsg := fmt.Sprintf("📊 Yana %d ta muvaffaqiyatli safar — 80 000 so'm mukofot sizniki.", tripsPendingForBonus)
 			if tripsPendingForBonus == 1 {
-				pendingMsg = "📊 Yana 1 ta muvaffaqiyatli safar — 80 000 so'm mukofotingiz."
+				pendingMsg = "📊 Yana 1 ta muvaffaqiyatli safar — 80 000 so'm mukofot sizniki."
 			}
 			if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, pendingMsg)); err != nil {
 				log.Printf("trip_service: notify driver trips pending: %v", err)
