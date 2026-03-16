@@ -268,11 +268,18 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		}
 	}
 	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
-	m.ReplyMarkup = kb
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send live location instruction: %v", err)
-		return
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath("assets/live_location_steps.png"))
+	photo.Caption = liveLocationInstructionMessage
+	photo.ReplyMarkup = kb
+	if _, err := bot.Send(photo); err != nil {
+		// Fallback to plain text if photo can't be sent (e.g. missing file in runtime).
+		log.Printf("driver: send live location instruction photo failed: %v", err)
+		m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
+		m.ReplyMarkup = kb
+		if _, err := bot.Send(m); err != nil {
+			log.Printf("driver: send live location instruction: %v", err)
+			return
+		}
 	}
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
