@@ -435,6 +435,12 @@ func sendOrUpdatePinnedStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID i
 		edit := tgbotapi.NewEditMessageText(chatID, int(statusMsgID.Int64), text)
 		if _, err := bot.Request(edit); err != nil {
 			log.Printf("driver: edit pinned status failed user_id=%d msg_id=%d: %v", userID, statusMsgID.Int64, err)
+		} else {
+			// Re-pin the status message so it always becomes the current pinned message.
+			pin := tgbotapi.PinChatMessageConfig{ChatID: chatID, MessageID: int(statusMsgID.Int64)}
+			if _, err := bot.Request(pin); err != nil {
+				log.Printf("driver: re-pin status message: %v", err)
+			}
 		}
 		return
 	}
