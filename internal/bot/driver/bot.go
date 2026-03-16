@@ -1073,15 +1073,6 @@ func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			return
 		}
 	}
-	if !lastLat.Valid || !lastLng.Valid {
-		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, "Avval lokatsiyangizni yuboring (Telegramda 📎 → Location). So'rovlar olish uchun lokatsiya kerak.")
-		m.ReplyMarkup = kb
-		if _, err := bot.Send(m); err != nil {
-			log.Printf("driver: send: %v", err)
-		}
-		return
-	}
 	if userID != 0 && !isDriverBalanceSufficient(ctx, db, userID, cfg) {
 		kb := getDriverKeyboard(db, userID)
 		m := tgbotapi.NewMessage(chatID, insufficientBalanceMessage)
@@ -1091,6 +1082,19 @@ func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		}
 		return
 	}
+	// Require active live location before going online and starting bonus.
+	var liveActive int
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(live_location_active, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&liveActive)
+	if liveActive == 0 {
+		kb := getDriverKeyboard(db, userID)
+		m := tgbotapi.NewMessage(chatID, "Online bo'lish uchun avval jonli lokatsiyani yoqing.\n\n" + liveLocationBilingualInstruction)
+		m.ReplyMarkup = kb
+		if _, err := bot.Send(m); err != nil {
+			log.Printf("driver: send require live location: %v", err)
+		}
+		return
+	}
+
 	_, err := db.ExecContext(ctx, `
 		UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1
 		WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?2)`,
