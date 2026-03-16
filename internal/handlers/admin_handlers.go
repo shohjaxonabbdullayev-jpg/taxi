@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 
@@ -74,21 +73,9 @@ func (h *AdminHandlers) VerifyDriver(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be approved or rejected"})
 		return
 	}
-	telegramID, err := h.svc.SetDriverVerification(c.Request.Context(), driverID, req.Status)
-	if err != nil {
+	if _, err := h.svc.SetDriverVerification(c.Request.Context(), driverID, req.Status); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update verification"})
 		return
-	}
-	if h.driverBot != nil && telegramID != 0 {
-		var text string
-		if req.Status == "approved" {
-			text = "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\nBoshlash uchun:\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing"
-		} else {
-			text = "❗ Hujjatlar tasdiqlanmadi.\n\nIltimos, aniqroq rasm yuboring."
-		}
-		if _, err := h.driverBot.Send(tgbotapi.NewMessage(telegramID, text)); err != nil {
-			log.Printf("admin: notify driver %d verification %s: %v", driverID, req.Status, err)
-		}
 	}
 	c.Status(http.StatusNoContent)
 }

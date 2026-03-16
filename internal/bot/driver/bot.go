@@ -1644,18 +1644,35 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assign
 		ctx := context.Background()
 		switch {
 		case strings.HasPrefix(data, "approve_driver_"):
-			if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'approved' WHERE user_id = ?1 AND verification_status != 'approved'`, driverUserID); err != nil {
-				log.Printf("driver: approve driver update error user_id=%d: %v", driverUserID, err)
-			} else {
-				log.Printf("driver: driver approved by admin user_id=%d", driverUserID)
-				var driverTgID int64
-				if err := db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err == nil && driverTgID != 0 {
-					msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
-					if _, err := bot.Send(msg); err != nil {
-						log.Printf("driver: notify approved driver send error user_id=%d: %v", driverUserID, err)
-					}
-				}
+			var status string
+			var notified int
+			if err := db.QueryRowContext(ctx, `SELECT COALESCE(verification_status, ''), COALESCE(approval_notified, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&status, &notified); err != nil {
+				log.Printf("driver: load driver status for approve user_id=%d: %v", driverUserID, err)
+				return
 			}
+			if status == "approved" {
+				// Already approved; do not send duplicate notification.
+				return
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'approved' WHERE user_id = ?1`, driverUserID); err != nil {
+				log.Printf("driver: approve driver update error user_id=%d: %v", driverUserID, err)
+				return
+			}
+			log.Printf("driver: driver approved by admin user_id=%d", driverUserID)
+			if notified != 0 {
+				// Approval already notified via some other path.
+				return
+			}
+			var driverTgID int64
+			if err := db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err != nil || driverTgID == 0 {
+				return
+			}
+			msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
+			if _, err := bot.Send(msg); err != nil {
+				log.Printf("driver: notify approved driver send error user_id=%d: %v", driverUserID, err)
+				return
+			}
+			_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, driverUserID)
 		case strings.HasPrefix(data, "reject_driver_"):
 			if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'rejected', license_photo_file_id = NULL, vehicle_doc_file_id = NULL, application_step = 'license_photo' WHERE user_id = ?1 AND verification_status != 'approved'`, driverUserID); err != nil {
 				log.Printf("driver: reject driver update error user_id=%d: %v", driverUserID, err)
