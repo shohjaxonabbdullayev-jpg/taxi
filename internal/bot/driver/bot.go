@@ -392,21 +392,30 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (strin
 		}
 	}
 	if isActive == 1 {
-		if liveRecent {
-			holat = "🟡 Online + Jonli lokatsiya"
-		} else {
-			holat = "🟢 Online"
-		}
+		holat = "🟢 Online"
 	}
+
 	text := "📊 Haydovchi holati\n\n"
-	text += fmt.Sprintf("%s\n%s\n💰 Balans: %d so'm", holat, liveLine, balance)
-	// Warnings according to current state.
-	if isActive == 0 && liveRecent {
-		text += "\n\n⚠️ Buyurtmalar olish uchun Onlinega o‘ting"
-	} else if isActive == 1 && !liveRecent {
-		text += "\n\n⚠️ Bonus olish uchun jonli lokatsiyani yoqing"
+	text += fmt.Sprintf("Holat: %s\nLokatsiya: %s\n\n", holat, liveLine)
+
+	switch {
+	// A) online + location on
+	case isActive == 1 && liveRecent:
+		text += "✅ Buyurtmalar olishga tayyor.\n💰 Bonus ishlayapti."
+
+	// B) online + location off
+	case isActive == 1 && !liveRecent:
+		text += "⚠️ Buyurtma olish uchun lokatsiyani yoqing."
+
+	// C) offline + location on
+	case isActive == 0 && liveRecent:
+		text += "⚠️ Buyurtma olish uchun online bo‘ling."
+
+	// D) offline + location off
+	default:
+		text += "⚠️ Ishlash uchun online bo‘ling va lokatsiyani yoqing."
 	}
-	text += fmt.Sprintf("\n\n🎁 Bugungi bonus: %d / 20 000 so'm", onlineBonusToday)
+
 	return text, nil
 }
 
