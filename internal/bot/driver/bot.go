@@ -1300,7 +1300,19 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 		send(bot, chatID, "Avval /start bosing.")
 		return
 	}
-	// Update the pinned status panel instead of sending a new status message.
+	// Render the current status text and send it as a message,
+	// and also update the pinned status panel.
+	text, err := formatStatusPanelText(ctx, db, userID)
+	if err != nil {
+		send(bot, chatID, "Xatolik.")
+		return
+	}
+	kb := getDriverKeyboard(db, userID)
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("driver: send status: %v", err)
+	}
 	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 }
 
