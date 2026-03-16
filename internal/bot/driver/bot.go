@@ -409,10 +409,7 @@ func driverKeyboardForVerificationPending() tgbotapi.ReplyKeyboardMarkup {
 }
 
 // formatStatusPanelText returns the status panel text (same layout as /status and pinned panel), including today's online bonus.
-// State mapping:
-// 🔴 Offline                -> is_active = 0
-// 🟢 Online (no live)       -> is_active = 1 and live location not recent
-// 🟡 Online + Live Location -> is_active = 1 and live location recent (bonus-eligible)
+// Holat (Online/Offline) follows is_active so it matches "Siz onlinesiz" / "Ishni boshlash"; lokatsiya and bonus text use liveRecent.
 func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (string, error) {
 	var isActive int
 	var balance int64
@@ -430,10 +427,9 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (strin
 		}
 	}
 
-	// Online bo'lish = faqat bonusActive holat (online + jonli lokatsiya ON).
-	// Aks holda holat offline hisoblanadi (offline yoki jonli lokatsiya o'chgan).
+	// Holat = is_active so panel never contradicts "Siz onlinesiz" / "Ishni boshlash".
 	holat := "🔴 Offline"
-	if isActive == 1 && liveRecent {
+	if isActive == 1 {
 		holat = "🟢 Online"
 	}
 
