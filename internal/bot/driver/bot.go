@@ -1003,8 +1003,9 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 					tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
 				),
 			)
-			// Send only buttons; text is sent above by the admin bot.
-			inlineMsg := tgbotapi.NewMessage(adminChatID, "")
+			// Send only buttons; text is already sent above by the admin bot.
+			// Use a minimal visible marker so Telegram always shows the bubble with buttons.
+			inlineMsg := tgbotapi.NewMessage(adminChatID, "⬇️")
 			inlineMsg.ReplyMarkup = kb
 			if _, err := bot.Send(inlineMsg); err != nil {
 				log.Printf("driver: admin approval inline buttons send error via driver bot user_id=%d: %v", userID, err)
