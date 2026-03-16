@@ -178,26 +178,47 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 	}
 	if strings.HasPrefix(data, "approve_driver_") {
 		if currentStatus == "approved" {
+			// Already approved: just reflect this in admin message if possible.
+			if q.Message != nil {
+				edit := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
+					fmt.Sprintf("✅ Haydovchi allaqachon tasdiqlangan (user_id=%d).", driverUserID))
+				_, _ = bot.Request(edit)
+			}
 			return
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'approved' WHERE user_id = ?1`, driverUserID); err != nil {
 			log.Printf("admin bot: approve driver update error user_id=%d: %v", driverUserID, err)
 			return
 		}
-		if driverTgID == 0 || approvalNotified != 0 {
-			return
+		// Notify driver once.
+		if driverTgID != 0 && approvalNotified == 0 {
+			msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
+			if _, err := bot.Send(msg); err != nil {
+				log.Printf("admin bot: notify approved driver send error user_id=%d: %v", driverUserID, err)
+				return
+			}
+			_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, driverUserID)
 		}
-		msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("admin bot: notify approved driver send error user_id=%d: %v", driverUserID, err)
-			return
+
+		// Update admin message to show success and remove buttons.
+		if q.Message != nil {
+			editText := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
+				fmt.Sprintf("✅ Haydovchi tasdiqlandi (user_id=%d).", driverUserID))
+			_, _ = bot.Request(editText)
+			clearMarkup := tgbotapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, tgbotapi.InlineKeyboardMarkup{})
+			_, _ = bot.Request(clearMarkup)
 		}
-		_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, driverUserID)
 		return
 	}
 
 	// reject_driver_
 	if currentStatus == "approved" {
+		// Already approved: reflect in admin message if possible.
+		if q.Message != nil {
+			edit := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
+				fmt.Sprintf("✅ Haydovchi allaqachon tasdiqlangan (user_id=%d).", driverUserID))
+			_, _ = bot.Request(edit)
+		}
 		return
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -210,12 +231,20 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		log.Printf("admin bot: reject driver update error user_id=%d: %v", driverUserID, err)
 		return
 	}
-	if driverTgID == 0 {
-		return
+	if driverTgID != 0 {
+		rej := tgbotapi.NewMessage(driverTgID, "❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.")
+		if _, err := bot.Send(rej); err != nil {
+			log.Printf("admin bot: notify rejected driver send error user_id=%d: %v", driverUserID, err)
+		}
 	}
-	rej := tgbotapi.NewMessage(driverTgID, "❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.")
-	if _, err := bot.Send(rej); err != nil {
-		log.Printf("admin bot: notify rejected driver send error user_id=%d: %v", driverUserID, err)
+
+	// Update admin message to show rejection and remove buttons.
+	if q.Message != nil {
+		editText := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
+			fmt.Sprintf("❌ Haydovchi rad etildi (user_id=%d).", driverUserID))
+		_, _ = bot.Request(editText)
+		clearMarkup := tgbotapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, tgbotapi.InlineKeyboardMarkup{})
+		_, _ = bot.Request(clearMarkup)
 	}
 }
 
