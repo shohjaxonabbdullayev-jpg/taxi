@@ -432,16 +432,18 @@ func sendOrUpdatePinnedStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID i
 	_ = db.QueryRowContext(ctx, `SELECT status_message_id FROM drivers WHERE user_id = ?1`, userID).Scan(&statusMsgID)
 	if statusMsgID.Valid && statusMsgID.Int64 != 0 {
 		edit := tgbotapi.NewEditMessageText(chatID, int(statusMsgID.Int64), text)
-		if _, err := bot.Request(edit); err != nil {
-			log.Printf("driver: edit pinned status failed user_id=%d msg_id=%d: %v", userID, statusMsgID.Int64, err)
-		} else {
+		if _, err := bot.Request(edit); err == nil {
 			// Re-pin the status message so it always becomes the current pinned message.
 			pin := tgbotapi.PinChatMessageConfig{ChatID: chatID, MessageID: int(statusMsgID.Int64)}
 			if _, err := bot.Request(pin); err != nil {
 				log.Printf("driver: re-pin status message: %v", err)
 			}
+			return
+		} else {
+			// Agar eski xabarni edit qilib bo'lmasa (o'chirilgan bo'lsa),
+			// yangi status xabar yaratishga o'tamiz.
+			log.Printf("driver: edit pinned status failed user_id=%d msg_id=%d: %v", userID, statusMsgID.Int64, err)
 		}
-		return
 	}
 	// Create first status message and pin it once.
 	m := tgbotapi.NewMessage(chatID, text)
