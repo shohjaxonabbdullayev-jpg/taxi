@@ -48,7 +48,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		}
 
 		// 1) Profil tasdiqlandi xabari
-		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
+		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing\n\nVideo qo'llanmalar va yangiliklar shu yerda!!!\nhttps://t.me/+iD_MYyWnntE1NmMy")
 		if _, err := driverBot.Send(msg); err != nil {
 			log.Printf("driver_approval_notifier: send approved message user_id=%d: %v", userID, err)
 			continue
