@@ -1657,7 +1657,7 @@ func sendWithOpenTripMapButton(bot *tgbotapi.BotAPI, chatID int64, cfg *config.C
 	webAppURL := base + "?trip_id=" + tripID + "&driver_id=" + strconv.FormatInt(driverUserID, 10)
 	kb := webAppKeyboard{
 		InlineKeyboard: [][]webAppButton{{
-			{Text: "🗺️ Trip xaritasini ochish", WebApp: &webAppInfo{URL: webAppURL}},
+			{Text: "🗺️ Safar xaritasini ochish", WebApp: &webAppInfo{URL: webAppURL}},
 		}},
 	}
 	m := tgbotapi.NewMessage(chatID, "Qabul qilindingiz ✅ Xarita ochish uchun tugmani bosing.")

@@ -115,7 +115,15 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 	if riderUserID != 0 {
 		var riderTelegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID); err == nil {
-			msg := tgbotapi.NewMessage(riderTelegramID, "Trip boshlandi ▶️")
+			// When trip starts, remove the cancel button from rider keyboard (keep only "Track driver").
+			kb := tgbotapi.NewReplyKeyboard(
+				tgbotapi.NewKeyboardButtonRow(
+					tgbotapi.NewKeyboardButton("📍 Haydovchini kuzatish"),
+				),
+			)
+			kb.ResizeKeyboard = true
+			msg := tgbotapi.NewMessage(riderTelegramID, "Safar boshlandi ▶️")
+			msg.ReplyMarkup = kb
 			if _, err := s.riderBot.Send(msg); err != nil {
 				log.Printf("trip_service: notify rider start: %v", err)
 			}
