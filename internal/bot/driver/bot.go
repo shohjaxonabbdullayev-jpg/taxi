@@ -700,7 +700,6 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64, ref
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send: %v", err)
 	}
-	showTermsShortOnce(bot, db, chatID, telegramID)
 	sendWelcomeBonusMessageIfNeeded(bot, db, chatID, userID)
 	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 }
@@ -927,8 +926,6 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 	// Require driver agreement (oferta) before sending admin approval request.
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
 		sendDriverAgreement(bot, chatID)
-		// Still show the general terms once (anti-spam via users.terms_accepted flag).
-		showTermsShortOnce(bot, db, chatID, telegramID)
 		// Notify driver that we're waiting for acceptance + admin.
 		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 		kb := getDriverKeyboard(db, userID)
@@ -1193,8 +1190,9 @@ func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		}
 		// Block until agreement accepted.
 		if !driverHasAcceptedAgreement(ctx, db, userID) {
-			send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
-			sendDriverAgreement(bot, chatID)
+		// Show agreement first, then warning.
+		sendDriverAgreement(bot, chatID)
+		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 			return
 		}
 	}
@@ -1493,8 +1491,9 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 	}
 	// Block until agreement accepted.
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
-		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
+		// Show agreement first, then warning.
 		sendDriverAgreement(bot, chatID)
+		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 		return
 	}
 	var verificationStatus sql.NullString
