@@ -12,11 +12,13 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/accounting"
 	"taxi-mvp/internal/bot"
 	driverbot "taxi-mvp/internal/bot/driver"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
@@ -36,6 +38,12 @@ func main() {
 	defer db.Close(database)
 	if err := legalrepair.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("legal schema repair: %v", err)
+	}
+	if err := ledgerrepair.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("driver_ledger schema repair: %v", err)
+	}
+	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
+		log.Printf("accounting: signup promo backfill: %v", err)
 	}
 
 	riderBot, err := tgbotapi.NewBotAPI(cfg.RiderBotToken)

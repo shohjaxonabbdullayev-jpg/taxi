@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/models"
@@ -343,4 +344,27 @@ func TryGrantReferrerStage2Promo(ctx context.Context, db *sql.DB, referredDriver
 		return err
 	}
 	return tx.Commit()
+}
+
+// BackfillMissingSignupPromos grants startup promo for approved drivers who never got ledger credit
+// (e.g. approval succeeded but TryGrantSignupPromoOnce failed mid-transaction due to schema drift).
+func BackfillMissingSignupPromos(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT user_id FROM drivers
+		WHERE verification_status = 'approved'
+		  AND COALESCE(signup_bonus_paid, 0) = 0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			continue
+		}
+		if err := TryGrantSignupPromoOnce(ctx, db, uid); err != nil {
+			log.Printf("accounting: backfill signup promo user_id=%d: %v", uid, err)
+		}
+	}
+	return rows.Err()
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/ledgerrepair"
 )
 
 func main() {
@@ -64,6 +65,9 @@ func main() {
 		}
 		if err := legalrepair.Ensure(ctx, db); err != nil {
 			log.Fatalf("legal schema repair: %v", err)
+		}
+		if err := ledgerrepair.Ensure(ctx, db); err != nil {
+			log.Fatalf("driver_ledger schema repair: %v", err)
 		}
 		log.Println("migrations up: ok")
 	} else {
