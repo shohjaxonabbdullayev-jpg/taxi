@@ -22,7 +22,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r := gin.Default()
 	r.Use(corsMiddleware())
 
-	healthHandler := func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) }
+	healthHandler := func(c *gin.Context) { c.String(200, "ok") }
 	r.GET("/health", healthHandler)
 	r.HEAD("/health", healthHandler)
 	r.GET("/", healthHandler)
