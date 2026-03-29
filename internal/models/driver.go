@@ -14,11 +14,16 @@ type Driver struct {
 	Balance            int64  `db:"balance" json:"balance"` // promo_balance + cash_balance
 	TotalPaid          int64  `db:"total_paid" json:"total_paid"`
 	VerificationStatus string `db:"verification_status" json:"verification_status"` // pending, approved, rejected
-	// Scanned from admin list query (1 = acceptance matches an active document version).
+	// Scanned from admin list query (1 = row in legal_acceptances matches currently active legal_documents version).
 	HasDriverTerms int `db:"has_driver_terms"`
 	HasUserTerms   int `db:"has_user_terms"`
 	HasPrivacy     int `db:"has_privacy"`
-	// users.terms_accepted — surfaced on admin driver rows for dashboard fallback.
+	// Stored version in legal_acceptances (0 if no row). Not necessarily equal to active version.
+	AcceptedDriverTermsVersion int `db:"acc_driver_terms_ver"`
+	AcceptedUserTermsVersion   int `db:"acc_user_terms_ver"`
+	AcceptedPrivacyVersion     int `db:"acc_privacy_ver"`
+	// Legacy DB flags (users/drivers); informational only — legal_* is source of truth for compliance columns.
 	UserTermsAcceptedLegacy int `db:"user_terms_accepted"`
+	DriverTermsLegacy       int `db:"driver_terms_legacy"`
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -89,9 +90,30 @@ type adminLegalHTTP struct {
 	db *sql.DB
 }
 
-const adminLegalJoin = `INNER JOIN legal_documents ld ON ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1`
+func legalAcceptanceJSON(userID int64, documentType string, version int, acceptedAt string, matchesActive bool, role, userName, clientIP, userAgent string) gin.H {
+	ip := strings.TrimSpace(clientIP)
+	ua := strings.TrimSpace(userAgent)
+	lab := versionLabel(version)
+	return gin.H{
+		"user_id":                userID,
+		"actor_id":               userID,
+		"document_type":          documentType,
+		"document_code":          documentType,
+		"version":                version,
+		"document_version":       version,
+		"version_label":          lab,
+		"version_string":         lab,
+		"accepted_at":            acceptedAt,
+		"matches_active_version": matchesActive,
+		"ip_address":             ip,
+		"client_ip":              ip,
+		"user_agent":             ua,
+		"role":                   role,
+		"user_name":              userName,
+	}
+}
 
-// buildLegalMonitoringData loads active docs and driver/rider compliance counts (shared by /monitoring and /stats).
+// buildLegalMonitoringData loads active docs and compliance counts using legal_acceptances vs active legal_documents only.
 func (h *adminLegalHTTP) buildLegalMonitoringData(ctx context.Context) (docList []gin.H, counts gin.H, err error) {
 	svc := legal.NewService(h.db)
 	types := []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}
@@ -106,28 +128,66 @@ func (h *adminLegalHTTP) buildLegalMonitoringData(ctx context.Context) (docList 
 			if len(prev) > 240 {
 				prev = prev[:240] + "…"
 			}
+			lab := versionLabel(d.Version)
 			docList = append(docList, gin.H{
-				"document_type":   t,
-				"version":         d.Version,
-				"content_preview": strings.TrimSpace(prev),
+				"document_type":          t,
+				"document_code":          t,
+				"version":                d.Version,
+				"document_version":       d.Version,
+				"version_label":          lab,
+				"version_string":         lab,
+				"content_preview":        strings.TrimSpace(prev),
+				"matches_active_version": true,
 			})
 		}
 	}
+
+	active, err := loadActiveDocumentVersions(ctx, h.db)
+	if err != nil {
+		return nil, nil, err
+	}
+	idx, err := loadAcceptanceIndexForDriversAndRiders(ctx, h.db)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var driversTotal, driversOK, ridersTotal, ridersOK int64
 	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM drivers`).Scan(&driversTotal)
-	_ = h.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM drivers d WHERE 3 = (
-			SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-			WHERE la.user_id = d.user_id
-			AND la.document_type IN ('driver_terms','user_terms','privacy_policy')
-		)`).Scan(&driversOK)
+	dRows, err := h.db.QueryContext(ctx, `SELECT user_id FROM drivers`)
+	if err != nil {
+		return nil, nil, err
+	}
+	for dRows.Next() {
+		var uid int64
+		if err := dRows.Scan(&uid); err != nil {
+			_ = dRows.Close()
+			return nil, nil, err
+		}
+		if len(missingDocsForUser(uid, "driver", active, idx)) == 0 {
+			driversOK++
+		}
+	}
+	_ = dRows.Close()
+
 	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'rider'`).Scan(&ridersTotal)
-	_ = h.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM users u WHERE u.role = 'rider' AND 2 = (
-			SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-			WHERE la.user_id = u.id
-			AND la.document_type IN ('user_terms','privacy_policy')
-		)`).Scan(&ridersOK)
+	rRows, err := h.db.QueryContext(ctx, `SELECT id FROM users WHERE role = 'rider'`)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rRows.Next() {
+		var uid int64
+		if err := rRows.Scan(&uid); err != nil {
+			_ = rRows.Close()
+			return nil, nil, err
+		}
+		if len(missingDocsForUser(uid, "rider", active, idx)) == 0 {
+			ridersOK++
+		}
+	}
+	_ = rRows.Close()
+
+	var totalAcc int64
+	_ = h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM legal_acceptances`).Scan(&totalAcc)
 
 	counts = gin.H{
 		"drivers_total":           driversTotal,
@@ -136,6 +196,7 @@ func (h *adminLegalHTTP) buildLegalMonitoringData(ctx context.Context) (docList 
 		"riders_fully_compliant":  ridersOK,
 		"drivers_missing_legal":   driversTotal - driversOK,
 		"riders_missing_legal":    ridersTotal - ridersOK,
+		"total_acceptances":       totalAcc,
 	}
 	return docList, counts, nil
 }
@@ -166,12 +227,20 @@ func (h *adminLegalHTTP) legalStats(c *gin.Context) {
 		return
 	}
 	n := len(docList)
-	stats := gin.H{
-		"active_document_count": n,
-	}
+	stats := gin.H{"active_document_count": n}
 	for k, v := range counts {
 		stats[k] = v
 	}
+	// CamelCase aliases for dashboards that expect JS-style keys (avoids "-" / undefined reads).
+	stats["driversTotal"] = counts["drivers_total"]
+	stats["driversFullyCompliant"] = counts["drivers_fully_compliant"]
+	stats["ridersTotal"] = counts["riders_total"]
+	stats["ridersFullyCompliant"] = counts["riders_fully_compliant"]
+	stats["driversMissingLegal"] = counts["drivers_missing_legal"]
+	stats["ridersMissingLegal"] = counts["riders_missing_legal"]
+	stats["totalAcceptances"] = counts["total_acceptances"]
+	stats["activeDocumentCount"] = n
+
 	c.JSON(http.StatusOK, gin.H{
 		"ok":                    true,
 		"enabled":               true,
@@ -185,42 +254,77 @@ func (h *adminLegalHTTP) legalStats(c *gin.Context) {
 
 func (h *adminLegalHTTP) issues(c *gin.Context) {
 	ctx := c.Request.Context()
-	rows, err := h.db.QueryContext(ctx, `
-		SELECT d.user_id AS id, 'driver' AS role FROM drivers d WHERE 3 > (
-			SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-			WHERE la.user_id = d.user_id
-			AND la.document_type IN ('driver_terms','user_terms','privacy_policy')
-		)
-		UNION ALL
-		SELECT u.id, 'rider' FROM users u WHERE u.role = 'rider' AND 2 > (
-			SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-			WHERE la.user_id = u.id
-			AND la.document_type IN ('user_terms','privacy_policy')
-		)
-		ORDER BY id DESC`)
+	list, err := h.computeNonCompliant(ctx, "all")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 		return
 	}
-	defer rows.Close()
-	type issueRow struct {
-		ID   int64  `json:"user_id"`
-		Role string `json:"role"`
-	}
-	var list []issueRow
-	for rows.Next() {
-		var r issueRow
-		if err := rows.Scan(&r.ID, &r.Role); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-			return
-		}
-		list = append(list, r)
-	}
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "issues": list, "count": len(list)})
+}
+
+// computeNonCompliant lists drivers/riders missing at least one required acceptance at the currently active version.
+func (h *adminLegalHTTP) computeNonCompliant(ctx context.Context, actorFilter string) ([]gin.H, error) {
+	active, err := loadActiveDocumentVersions(ctx, h.db)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := loadAcceptanceIndexForDriversAndRiders(ctx, h.db)
+	if err != nil {
+		return nil, err
+	}
+	type row struct {
+		uid  int64
+		role string
+		miss []string
+	}
+	var buf []row
+	if actorFilter == "all" || actorFilter == "driver" {
+		dRows, err := h.db.QueryContext(ctx, `SELECT user_id FROM drivers`)
+		if err != nil {
+			return nil, err
+		}
+		for dRows.Next() {
+			var uid int64
+			if err := dRows.Scan(&uid); err != nil {
+				_ = dRows.Close()
+				return nil, err
+			}
+			miss := missingDocsForUser(uid, "driver", active, idx)
+			if len(miss) > 0 {
+				buf = append(buf, row{uid, "driver", miss})
+			}
+		}
+		_ = dRows.Close()
+	}
+	if actorFilter == "all" || actorFilter == "rider" {
+		rRows, err := h.db.QueryContext(ctx, `SELECT id FROM users WHERE role = 'rider'`)
+		if err != nil {
+			return nil, err
+		}
+		for rRows.Next() {
+			var uid int64
+			if err := rRows.Scan(&uid); err != nil {
+				_ = rRows.Close()
+				return nil, err
+			}
+			miss := missingDocsForUser(uid, "rider", active, idx)
+			if len(miss) > 0 {
+				buf = append(buf, row{uid, "rider", miss})
+			}
+		}
+		_ = rRows.Close()
+	}
+	sort.Slice(buf, func(i, j int) bool { return buf[i].uid > buf[j].uid })
+	out := make([]gin.H, 0, len(buf))
+	for _, r := range buf {
+		out = append(out, gin.H{
+			"user_id":           r.uid,
+			"actor_id":          r.uid,
+			"role":              r.role,
+			"missing_documents": r.miss,
+		})
+	}
+	return out, nil
 }
 
 // missingLegal lists users missing required acceptances for active document versions.
@@ -243,64 +347,10 @@ func (h *adminLegalHTTP) missingLegal(c *gin.Context) {
 		return
 	}
 
-	type missRow struct {
-		UserID int64  `json:"user_id"`
-		Role   string `json:"role"`
-	}
-	var list []missRow
-
-	if at == "all" || at == "driver" {
-		rows, qerr := h.db.QueryContext(ctx, `
-			SELECT d.user_id AS id, 'driver' AS role FROM drivers d WHERE 3 > (
-				SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-				WHERE la.user_id = d.user_id
-				AND la.document_type IN ('driver_terms','user_terms','privacy_policy')
-			)
-			ORDER BY id DESC`)
-		if qerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": qerr.Error()})
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var r missRow
-			if err := rows.Scan(&r.UserID, &r.Role); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-				return
-			}
-			list = append(list, r)
-		}
-		if err := rows.Err(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-			return
-		}
-	}
-
-	if at == "all" || at == "rider" {
-		rows, qerr := h.db.QueryContext(ctx, `
-			SELECT u.id, 'rider' AS role FROM users u WHERE u.role = 'rider' AND 2 > (
-				SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
-				WHERE la.user_id = u.id
-				AND la.document_type IN ('user_terms','privacy_policy')
-			)
-			ORDER BY id DESC`)
-		if qerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": qerr.Error()})
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var r missRow
-			if err := rows.Scan(&r.UserID, &r.Role); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-				return
-			}
-			list = append(list, r)
-		}
-		if err := rows.Err(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-			return
-		}
+	list, err := h.computeNonCompliant(ctx, at)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -332,11 +382,16 @@ func (h *adminLegalHTTP) documents(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
+		lab := versionLabel(ver)
 		out = append(out, gin.H{
-			"document_type": dt,
-			"version":       ver,
-			"is_active":     active == 1,
-			"content":       body,
+			"document_type":    dt,
+			"document_code":    dt,
+			"version":          ver,
+			"document_version": ver,
+			"version_label":    lab,
+			"version_string":   lab,
+			"is_active":        active == 1,
+			"content":          body,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -347,7 +402,7 @@ func (h *adminLegalHTTP) documents(c *gin.Context) {
 }
 
 // allAcceptances returns all rows from legal_acceptances (newest first) for admin dashboards.
-// Query: limit (default 2000, max 10000), offset (default 0).
+// Query: limit (default 2000, max 10000), offset (default 0), user_id (optional filter — same as /users/:id/acceptances for modal clients).
 func (h *adminLegalHTTP) allAcceptances(c *gin.Context) {
 	ctx := c.Request.Context()
 	limit := 2000
@@ -365,7 +420,14 @@ func (h *adminLegalHTTP) allAcceptances(c *gin.Context) {
 			offset = n
 		}
 	}
-	rows, err := h.db.QueryContext(ctx, `
+	var filterUID int64
+	if s := c.Query("user_id"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			filterUID = n
+		}
+	}
+
+	q := `
 		SELECT la.user_id,
 		       la.document_type,
 		       la.version,
@@ -373,11 +435,22 @@ func (h *adminLegalHTTP) allAcceptances(c *gin.Context) {
 		       EXISTS(SELECT 1 FROM legal_documents ld
 		              WHERE ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1) AS matches_active,
 		       COALESCE(u.role, '') AS role,
-		       COALESCE(u.name, '') AS user_name
+		       COALESCE(u.name, '') AS user_name,
+		       COALESCE(la.client_ip, '') AS client_ip,
+		       COALESCE(la.user_agent, '') AS user_agent
 		FROM legal_acceptances la
-		LEFT JOIN users u ON u.id = la.user_id
-		ORDER BY la.accepted_at DESC, la.user_id DESC
-		LIMIT ?1 OFFSET ?2`, limit, offset)
+		LEFT JOIN users u ON u.id = la.user_id`
+	args := []interface{}{}
+	if filterUID > 0 {
+		q += ` WHERE la.user_id = ?1`
+		args = append(args, filterUID)
+		q += ` ORDER BY la.accepted_at DESC, la.user_id DESC LIMIT ?2 OFFSET ?3`
+		args = append(args, limit, offset)
+	} else {
+		q += ` ORDER BY la.accepted_at DESC, la.user_id DESC LIMIT ?1 OFFSET ?2`
+		args = append(args, limit, offset)
+	}
+	rows, err := h.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 		return
@@ -386,27 +459,24 @@ func (h *adminLegalHTTP) allAcceptances(c *gin.Context) {
 	var list []gin.H
 	for rows.Next() {
 		var uid int64
-		var dt, at, role, name string
+		var dt, at, role, name, cip, uag string
 		var ver, match int
-		if err := rows.Scan(&uid, &dt, &ver, &at, &match, &role, &name); err != nil {
+		if err := rows.Scan(&uid, &dt, &ver, &at, &match, &role, &name, &cip, &uag); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		list = append(list, gin.H{
-			"user_id":                uid,
-			"document_type":          dt,
-			"version":                ver,
-			"accepted_at":            at,
-			"matches_active_version": match != 0,
-			"role":                   role,
-			"user_name":              name,
-		})
+		list = append(list, legalAcceptanceJSON(uid, dt, ver, at, match != 0, role, name, cip, uag))
 	}
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "acceptances": list, "count": len(list), "limit": limit, "offset": offset})
+	resp := gin.H{"ok": true, "acceptances": list, "records": list, "count": len(list), "limit": limit, "offset": offset}
+	if filterUID > 0 {
+		resp["user_id"] = filterUID
+		resp["actor_id"] = filterUID
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *adminLegalHTTP) userAcceptances(c *gin.Context) {
@@ -414,13 +484,17 @@ func (h *adminLegalHTTP) userAcceptances(c *gin.Context) {
 	idStr := c.Param("user_id")
 	uid, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || uid <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid user_id"})
 		return
 	}
+	var role, name string
+	_ = h.db.QueryRowContext(ctx, `SELECT COALESCE(role,''), COALESCE(name,'') FROM users WHERE id = ?1`, uid).Scan(&role, &name)
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT la.document_type, la.version, la.accepted_at,
 		       EXISTS(SELECT 1 FROM legal_documents ld
-		              WHERE ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1) AS matches_active
+		              WHERE ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1) AS matches_active,
+		       COALESCE(la.client_ip, '') AS client_ip,
+		       COALESCE(la.user_agent, '') AS user_agent
 		FROM legal_acceptances la
 		WHERE la.user_id = ?1
 		ORDER BY la.accepted_at DESC`, uid)
@@ -431,24 +505,25 @@ func (h *adminLegalHTTP) userAcceptances(c *gin.Context) {
 	defer rows.Close()
 	var out []gin.H
 	for rows.Next() {
-		var dt string
-		var ver int
-		var at string
-		var matchActive int
-		if err := rows.Scan(&dt, &ver, &at, &matchActive); err != nil {
+		var dt, at, cip, uag string
+		var ver, matchActive int
+		if err := rows.Scan(&dt, &ver, &at, &matchActive, &cip, &uag); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		out = append(out, gin.H{
-			"document_type":          dt,
-			"version":                ver,
-			"accepted_at":            at,
-			"matches_active_version": matchActive != 0,
-		})
+		out = append(out, legalAcceptanceJSON(uid, dt, ver, at, matchActive != 0, role, name, cip, uag))
 	}
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "user_id": uid, "acceptances": out})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"user_id":       uid,
+		"actor_id":      uid,
+		"acceptances":   out,
+		"records":       out,
+		"history":       out,
+		"count":         len(out),
+	})
 }

@@ -208,6 +208,22 @@ Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
 
 If logs show `no such column: document_type` on `legal_documents`, the database has an incompatible older `legal_*` layout (or a partial deploy). Run migrations through **`034_legal_documents_schema_rebuild.sql`**, which drops and recreates `legal_documents`, `legal_acceptances`, and `legal_pending_resume` with the schema the app expects. **Legal acceptance rows are cleared**; users/drivers accept again after migrate.
 
+### Admin legal API (dashboard / Vue)
+
+Routes are mounted on **`/admin/legal/...`**, **`/api/admin/legal/...`**, **`/api/v1/admin/legal/...`**, and **`/v1/admin/legal/...`** (same handlers).
+
+**Source of truth:** `legal_acceptances` rows must match the **currently active** row in `legal_documents` per `document_type` (`is_active = 1`). Compliance counts, `/missing`, and `/issues` compare stored `(document_type, version)` to that active version. Legacy columns `users.terms_accepted` / `drivers.terms_accepted` are **not** used for those endpoints; driver/rider list JSON exposes them only as `legacy_*` fields.
+
+**`GET .../legal/acceptances`** — optional `?user_id=` (same data as per-user route). Each row includes: `user_id`, `actor_id` (same), `document_type`, `document_code` (same), `version`, `document_version` (same), `version_label` / `version_string` (e.g. `v2`), `accepted_at`, `matches_active_version`, `client_ip`, `ip_address` (same), `user_agent`, `role`, `user_name`. Response also mirrors `acceptances` as `records` when filtered by `user_id`.
+
+**`GET .../legal/users/:user_id/acceptances`** — `acceptances`, `records`, and `history` are the **same array** (for clients that expect different keys).
+
+**`GET .../legal/stats`** — `stats` and `counts` include snake_case keys plus camelCase aliases (`driversTotal`, `totalAcceptances`, …). `total_acceptances` is `COUNT(*)` from `legal_acceptances`.
+
+**`GET .../legal/missing`**, **`/issues`** — each entry: `user_id`, `actor_id`, `role`, **`missing_documents`** (e.g. `["user_terms","privacy_policy"]`) when not compliant.
+
+**`GET .../admin/drivers`**, **`/admin/riders`** — legal OK flags follow `legal_acceptances` + active docs only; accepted versions are `*_accepted_version` integer fields (show as `v{N}` in UI).
+
 ### Driver bot: live location is the only “online” UX (YettiQanot)
 
 - **Visible state:** A driver is treated as **online** only while **Telegram live location** is active (fresh `last_live_location_at`, same window as dispatch). There is **no** separate reply-keyboard “go online / go offline” flow; `drivers.is_active` for matching is still updated from the live-location handler but eligibility is **live location + balance + legal**.

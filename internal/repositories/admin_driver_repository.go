@@ -43,15 +43,16 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 		       d.total_paid,
 		       COALESCE(d.verification_status, '') AS verification_status,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = d.user_id AND la.document_type = 'driver_terms') THEN 1
-		            WHEN COALESCE(d.terms_accepted, 0) != 0 THEN 1 ELSE 0 END AS has_driver_terms,
+		              WHERE la.user_id = d.user_id AND la.document_type = 'driver_terms') THEN 1 ELSE 0 END AS has_driver_terms,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = d.user_id AND la.document_type = 'user_terms') THEN 1
-		            WHEN COALESCE(u.terms_accepted, 0) != 0 THEN 1 ELSE 0 END AS has_user_terms,
+		              WHERE la.user_id = d.user_id AND la.document_type = 'user_terms') THEN 1 ELSE 0 END AS has_user_terms,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy') THEN 1
-		            WHEN COALESCE(u.terms_accepted, 0) != 0 THEN 1 ELSE 0 END AS has_privacy,
-		       COALESCE(u.terms_accepted, 0) AS user_terms_accepted
+		              WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy') THEN 1 ELSE 0 END AS has_privacy,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'driver_terms'), 0) AS acc_driver_terms_ver,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'user_terms'), 0) AS acc_user_terms_ver,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy'), 0) AS acc_privacy_ver,
+		       COALESCE(u.terms_accepted, 0) AS user_terms_accepted,
+		       COALESCE(d.terms_accepted, 0) AS driver_terms_legacy
 		FROM drivers d
 		JOIN users u ON u.id = d.user_id
 		ORDER BY d.user_id DESC`)
@@ -64,7 +65,9 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 	for rows.Next() {
 		var d models.Driver
 		if err := rows.Scan(&d.ID, &d.Name, &d.Phone, &d.CarModel, &d.PlateNumber, &d.PromoBalance, &d.CashBalance, &d.Balance, &d.TotalPaid, &d.VerificationStatus,
-			&d.HasDriverTerms, &d.HasUserTerms, &d.HasPrivacy, &d.UserTermsAcceptedLegacy); err != nil {
+			&d.HasDriverTerms, &d.HasUserTerms, &d.HasPrivacy,
+			&d.AcceptedDriverTermsVersion, &d.AcceptedUserTermsVersion, &d.AcceptedPrivacyVersion,
+			&d.UserTermsAcceptedLegacy, &d.DriverTermsLegacy); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -83,11 +86,11 @@ func (r *adminDriverRepo) ListRidersForAdmin(ctx context.Context) ([]models.Admi
 		       COALESCE(u.name, '') AS name,
 		       COALESCE(u.phone, '') AS phone,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = u.id AND la.document_type = 'user_terms') THEN 1
-		            WHEN COALESCE(u.terms_accepted, 0) != 0 THEN 1 ELSE 0 END AS has_user_terms,
+		              WHERE la.user_id = u.id AND la.document_type = 'user_terms') THEN 1 ELSE 0 END AS has_user_terms,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = u.id AND la.document_type = 'privacy_policy') THEN 1
-		            WHEN COALESCE(u.terms_accepted, 0) != 0 THEN 1 ELSE 0 END AS has_privacy,
+		              WHERE la.user_id = u.id AND la.document_type = 'privacy_policy') THEN 1 ELSE 0 END AS has_privacy,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = u.id AND la.document_type = 'user_terms'), 0) AS acc_user_terms_ver,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = u.id AND la.document_type = 'privacy_policy'), 0) AS acc_privacy_ver,
 		       COALESCE(u.terms_accepted, 0) AS terms_accepted
 		FROM users u
 		WHERE u.role = 'rider'
@@ -99,12 +102,15 @@ func (r *adminDriverRepo) ListRidersForAdmin(ctx context.Context) ([]models.Admi
 	var out []models.AdminRiderDTO
 	for rows.Next() {
 		var dto models.AdminRiderDTO
-		var ut, pr, terms int
-		if err := rows.Scan(&dto.ID, &dto.TelegramID, &dto.Name, &dto.Phone, &ut, &pr, &terms); err != nil {
+		var ut, pr, terms, utVer, prVer int
+		if err := rows.Scan(&dto.ID, &dto.TelegramID, &dto.Name, &dto.Phone, &ut, &pr, &utVer, &prVer, &terms); err != nil {
 			return nil, err
 		}
 		dto.UserTermsOK = ut != 0
 		dto.PrivacyOK = pr != 0
+		dto.UserTermsAcceptedVersion = utVer
+		dto.PrivacyPolicyAcceptedVersion = prVer
+		dto.LegacyTermsAccepted = terms
 		dto.TermsAccepted = terms
 		out = append(out, dto)
 	}
