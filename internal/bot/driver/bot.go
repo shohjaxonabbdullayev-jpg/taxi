@@ -172,12 +172,12 @@ func driverWasOnlineOrLiveIntent(ctx context.Context, db *sql.DB, userID int64) 
 
 func resetDriverLiveOnlineStateForLegalRelive(ctx context.Context, db *sql.DB, userID int64) {
 	_, _ = db.ExecContext(ctx, `
-		UPDATE drivers SET is_active = 0, live_location_active = 0, last_live_location_at = NULL
+		UPDATE drivers SET is_active = 0, manual_offline = 0, live_location_active = 0, last_live_location_at = NULL
 		WHERE user_id = ?1`, userID)
 }
 
 func postLegalReliveMessage(pendingRequestID string) string {
-	s := "✅ Yangi qoidalar qabul qilindi.\n\nIshni davom ettirish uchun jonli lokatsiyani qayta yuboring."
+	s := "✅ Yangi shartnoma qabul qilindi.\n\nTizimda hozir oflaynsiz. Buyurtmalar olish uchun Telegramda jonli lokatsiyani qayta ulang («" + driverloc.BtnShareLiveLocation + "»)."
 	if strings.TrimSpace(pendingRequestID) != "" {
 		s += "\n\nBuyurtmani qabul qilish uchun ham jonli lokatsiyani ulang — so‘rov amal qilishi bilan qayta urinib ko‘ring."
 	}
@@ -1573,40 +1573,59 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			log.Printf("driver: SyncDriverLegalPromptFingerprint user_id=%d: %v", userID, err)
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+
+		reaccepted := !before
+		var verificationStatus sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+		stStr := strings.TrimSpace(verificationStatus.String)
+
 		kind, payload, ok := lSvc.TakePendingResume(ctx, userID)
-		processedRelive := false
 		if ok {
 			switch kind {
 			case resumeDriverRelive:
-				processedRelive = true
+				// Live was blocked until latest terms: stay offline until Telegram live is shared again.
 				resetDriverLiveOnlineStateForLegalRelive(ctx, db, userID)
 				sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
 				send(bot, chatID, postLegalReliveMessage(payload))
+				if stStr == "approved" {
+					kb := getDriverKeyboard(db, userID)
+					m := tgbotapi.NewMessage(chatID, "📍 Jonli lokatsiyani qayta ulang — tizim sizni onlayn deb hisoblaydi.")
+					m.ReplyMarkup = kb
+					_, _ = bot.Send(m)
+				} else if stStr == "pending_approval" && reaccepted {
+					kb := getDriverKeyboard(db, userID)
+					m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+					m.ReplyMarkup = kb
+					_, _ = bot.Send(m)
+					sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
+				} else if stStr == "pending_approval" {
+					kb := getDriverKeyboard(db, userID)
+					m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+					m.ReplyMarkup = kb
+					_, _ = bot.Send(m)
+				}
+				return
 			case resumeDriverAccept:
 				rid := strings.TrimSpace(payload)
 				if rid != "" && assignmentService != nil {
 					handleAccept(bot, db, cfg, assignmentService, tripService, chatID, telegramID, rid, q)
 				}
+				return
 			}
 		}
-		var st sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&st)
-		stStr := strings.TrimSpace(st.String)
-		if processedRelive {
-			if !before {
-				kb := getDriverKeyboard(db, userID)
-				m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
-				m.ReplyMarkup = kb
-				_, _ = bot.Send(m)
-				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
-				return
-			}
-			if stStr == "pending_approval" {
-				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
-				return
-			}
+
+		// Re-accepted latest terms without a queued relive (e.g. /start or periodic notifier): still offline until live is re-shared.
+		if reaccepted && stStr == "approved" {
+			resetDriverLiveOnlineStateForLegalRelive(ctx, db, userID)
+			sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
+			send(bot, chatID, postLegalReliveMessage(""))
+			kb := getDriverKeyboard(db, userID)
+			m := tgbotapi.NewMessage(chatID, "📍 Jonli lokatsiyani qayta ulang — buyurtmalar faqat shundan keyin keladi.")
+			m.ReplyMarkup = kb
+			_, _ = bot.Send(m)
 			return
 		}
+
 		if before {
 			if stStr == "pending_approval" {
 				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
