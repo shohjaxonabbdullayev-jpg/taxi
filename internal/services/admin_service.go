@@ -59,9 +59,17 @@ func (s *AdminService) ListDrivers(ctx context.Context) ([]models.AdminDriverDTO
 			TotalPaid:          d.TotalPaid,
 			Status:             status,
 			VerificationStatus: d.VerificationStatus,
+			DriverTermsOK:      d.HasDriverTerms != 0,
+			UserTermsOK:        d.HasUserTerms != 0,
+			PrivacyOK:          d.HasPrivacy != 0,
 		})
 	}
 	return out, nil
+}
+
+// ListRiders returns riders for the admin dashboard (Foydalanuvchilar).
+func (s *AdminService) ListRiders(ctx context.Context) ([]models.AdminRiderDTO, error) {
+	return s.drivers.ListRidersForAdmin(ctx)
 }
 
 // SetDriverVerification sets verification_status to "approved" or "rejected". Returns the driver's Telegram ID for notification.

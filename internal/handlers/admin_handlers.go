@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 
@@ -13,11 +14,13 @@ import (
 type AdminHandlers struct {
 	svc       *services.AdminService
 	driverBot *tgbotapi.BotAPI
+	db        *sql.DB
 }
 
 // NewAdminHandlers creates AdminHandlers. driverBot can be nil; then verify notifications are skipped.
-func NewAdminHandlers(svc *services.AdminService, driverBot *tgbotapi.BotAPI) *AdminHandlers {
-	return &AdminHandlers{svc: svc, driverBot: driverBot}
+// db is used for legal monitoring and rider list routes; may be nil (those routes are skipped).
+func NewAdminHandlers(svc *services.AdminService, driverBot *tgbotapi.BotAPI, db *sql.DB) *AdminHandlers {
+	return &AdminHandlers{svc: svc, driverBot: driverBot, db: db}
 }
 
 // Register registers /admin routes on the given router.
@@ -28,11 +31,26 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 	g := r.Group("/admin")
 	{
 		g.GET("/drivers", h.ListDrivers)
+		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
 		g.POST("/drivers/:id/verify", h.VerifyDriver)
 		g.GET("/payments", h.ListPayments)
 		g.GET("/dashboard", h.Dashboard)
 	}
+	if h.db != nil {
+		registerAdminLegalRoutes(g, h.db)
+	}
+}
+
+// ListRiders returns admin rider DTOs (GET /admin/riders).
+func (h *AdminHandlers) ListRiders(c *gin.Context) {
+	ctx := c.Request.Context()
+	riders, err := h.svc.ListRiders(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list riders"})
+		return
+	}
+	c.JSON(http.StatusOK, riders)
 }
 
 // ListDrivers returns admin driver DTOs.

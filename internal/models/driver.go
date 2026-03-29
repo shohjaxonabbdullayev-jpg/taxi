@@ -11,5 +11,9 @@ type Driver struct {
 	Balance            int64  `db:"balance" json:"balance"`
 	TotalPaid          int64  `db:"total_paid" json:"total_paid"`
 	VerificationStatus string `db:"verification_status" json:"verification_status"` // pending, approved, rejected
+	// Scanned from admin list query (1 = acceptance matches an active document version).
+	HasDriverTerms int `db:"has_driver_terms"`
+	HasUserTerms   int `db:"has_user_terms"`
+	HasPrivacy     int `db:"has_privacy"`
 }
 

@@ -10,6 +10,7 @@ import (
 // AdminDriverRepository defines read/write operations for admin driver balance views.
 type AdminDriverRepository interface {
 	ListDriversWithBalance(ctx context.Context) ([]models.Driver, error)
+	ListRidersForAdmin(ctx context.Context) ([]models.AdminRiderDTO, error)
 	GetDriverByID(ctx context.Context, id int64) (*models.Driver, error)
 	UpdateDriverBalance(ctx context.Context, id int64, delta int64, countPaid bool) error
 	SetDriverBalance(ctx context.Context, id int64, newBalance int64) error
@@ -26,7 +27,9 @@ func NewAdminDriverRepository(db *sql.DB) AdminDriverRepository {
 	return &adminDriverRepo{db: db}
 }
 
-// ListDriversWithBalance returns drivers ordered by user_id DESC with balance, total_paid, and verification_status.
+const legalJoinActive = `INNER JOIN legal_documents ld ON ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1`
+
+// ListDriversWithBalance returns drivers ordered by user_id DESC with balance, legal flags (active document versions), and verification_status.
 func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.Driver, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT u.id AS id,
@@ -36,7 +39,13 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 		       COALESCE(d.plate, '') AS plate_number,
 		       d.balance,
 		       d.total_paid,
-		       COALESCE(d.verification_status, '') AS verification_status
+		       COALESCE(d.verification_status, '') AS verification_status,
+		       EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
+		              WHERE la.user_id = d.user_id AND la.document_type = 'driver_terms') AS has_driver_terms,
+		       EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
+		              WHERE la.user_id = d.user_id AND la.document_type = 'user_terms') AS has_user_terms,
+		       EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
+		              WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy') AS has_privacy
 		FROM drivers d
 		JOIN users u ON u.id = d.user_id
 		ORDER BY d.user_id DESC`)
@@ -48,7 +57,8 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 	var out []models.Driver
 	for rows.Next() {
 		var d models.Driver
-		if err := rows.Scan(&d.ID, &d.Name, &d.Phone, &d.CarModel, &d.PlateNumber, &d.Balance, &d.TotalPaid, &d.VerificationStatus); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Phone, &d.CarModel, &d.PlateNumber, &d.Balance, &d.TotalPaid, &d.VerificationStatus,
+			&d.HasDriverTerms, &d.HasUserTerms, &d.HasPrivacy); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -57,6 +67,38 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 		return nil, err
 	}
 	return out, nil
+}
+
+// ListRidersForAdmin returns riders with user_terms / privacy acceptance against active document versions.
+func (r *adminDriverRepo) ListRidersForAdmin(ctx context.Context) ([]models.AdminRiderDTO, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.id,
+		       u.telegram_id,
+		       COALESCE(u.name, '') AS name,
+		       COALESCE(u.phone, '') AS phone,
+		       EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
+		              WHERE la.user_id = u.id AND la.document_type = 'user_terms') AS has_user_terms,
+		       EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
+		              WHERE la.user_id = u.id AND la.document_type = 'privacy_policy') AS has_privacy
+		FROM users u
+		WHERE u.role = 'rider'
+		ORDER BY u.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.AdminRiderDTO
+	for rows.Next() {
+		var dto models.AdminRiderDTO
+		var ut, pr int
+		if err := rows.Scan(&dto.ID, &dto.TelegramID, &dto.Name, &dto.Phone, &ut, &pr); err != nil {
+			return nil, err
+		}
+		dto.UserTermsOK = ut != 0
+		dto.PrivacyOK = pr != 0
+		out = append(out, dto)
+	}
+	return out, rows.Err()
 }
 
 // GetDriverByID returns a single driver by user id or nil if not found.
