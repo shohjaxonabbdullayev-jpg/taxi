@@ -7,9 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 
-	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/models"
 	"taxi-mvp/internal/repositories"
 )
@@ -216,81 +214,7 @@ func strPtr(s string) *string {
 	return &s
 }
 
-const fiveTripsBonusSoM = int64(80000)
 const referrerStage2SoM = int64(100000)
-const driverSignupPromoSoM = int64(100000)
-
-// TryGrantSignupPromoOnce credits startup promotional platform credit once per driver (on approval); not withdrawable cash.
-func TryGrantSignupPromoOnce(ctx context.Context, db *sql.DB, driverUserID int64) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE drivers SET promo_balance = promo_balance + ?1, balance = balance + ?1, signup_bonus_paid = 1
-		WHERE user_id = ?2 AND COALESCE(signup_bonus_paid, 0) = 0`,
-		driverSignupPromoSoM, driverUserID)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return nil
-	}
-	note := "Driver approval startup promotional platform credit (not real money; not withdrawable)."
-	ledger := repositories.NewDriverLedgerRepository(db)
-	ref := "signup_bonus"
-	if err := ledger.InsertTx(ctx, tx, &models.DriverLedgerEntry{
-		DriverID:      driverUserID,
-		Bucket:        models.LedgerBucketPromo,
-		EntryType:     models.LedgerEntryPromoGranted,
-		Amount:        driverSignupPromoSoM,
-		ReferenceType: &ref,
-		Note:          &note,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// TryGrantFiveTripsPromoBonus grants 80k promo once when the driver has 5+ finished trips (atomic with five_trips_bonus_paid).
-func TryGrantFiveTripsPromoBonus(ctx context.Context, db *sql.DB, driverID int64) (granted bool, err error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE drivers SET promo_balance = promo_balance + ?1, balance = balance + ?1, five_trips_bonus_paid = 1
-		WHERE user_id = ?2 AND COALESCE(five_trips_bonus_paid, 0) = 0
-		  AND (SELECT COUNT(*) FROM trips WHERE driver_user_id = ?2 AND status = ?3) >= 5`,
-		fiveTripsBonusSoM, driverID, domain.TripStatusFinished)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return false, nil
-	}
-	note := "Five finished trips promotional platform credit (not withdrawable cash)."
-	ledger := repositories.NewDriverLedgerRepository(db)
-	ref := "five_trips_bonus"
-	if err := ledger.InsertTx(ctx, tx, &models.DriverLedgerEntry{
-		DriverID:      driverID,
-		Bucket:        models.LedgerBucketPromo,
-		EntryType:     models.LedgerEntryPromoGranted,
-		Amount:        fiveTripsBonusSoM,
-		ReferenceType: &ref,
-		Note:          &note,
-	}); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
 
 // TryGrantReferrerStage2Promo credits the inviter driver with stage-2 promo when the referred driver qualifies.
 func TryGrantReferrerStage2Promo(ctx context.Context, db *sql.DB, referredDriverUserID int64, inviterReferralCode string) error {
@@ -344,27 +268,4 @@ func TryGrantReferrerStage2Promo(ctx context.Context, db *sql.DB, referredDriver
 		return err
 	}
 	return tx.Commit()
-}
-
-// BackfillMissingSignupPromos grants startup promo for approved drivers who never got ledger credit
-// (e.g. approval succeeded but TryGrantSignupPromoOnce failed mid-transaction due to schema drift).
-func BackfillMissingSignupPromos(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `
-		SELECT user_id FROM drivers
-		WHERE verification_status = 'approved'
-		  AND COALESCE(signup_bonus_paid, 0) = 0`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var uid int64
-		if err := rows.Scan(&uid); err != nil {
-			continue
-		}
-		if err := TryGrantSignupPromoOnce(ctx, db, uid); err != nil {
-			log.Printf("accounting: backfill signup promo user_id=%d: %v", uid, err)
-		}
-	}
-	return rows.Err()
 }

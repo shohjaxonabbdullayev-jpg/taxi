@@ -42,8 +42,8 @@ const (
 	// Onboarding: shown when driver completes registration (live location = online; no separate online button).
 	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nBuyurtmalar olish uchun pastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasini bosing va Telegramda jonli lokatsiyani ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
 
-	// Welcome bonus message: explains all driver bonuses (shown once after registration).
-	welcomeBonusMessage = "🎁 Haydovchi bonuslari\n\n1️⃣ Yangi haydovchi bonusi: 100 000 so'm platform krediti (hisobingizga qo'shildi)\n\n2️⃣ Online bonus: 1 soat online → +2 000 so'm. Kunlik limit: 20 000 so'm"
+	// Welcome promo message: shown once after registration (same copy as approval notifier / accounting constant).
+	welcomeBonusMessage = accounting.DriverNewPromoProgramMessage
 	// Bilingual instruction line for all Live Location prompts.
 	liveLocationBilingualInstruction = "📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
 	// One-time warning when Live Location becomes inactive.
@@ -1707,6 +1707,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 				log.Printf("driver: notify approved driver send error user_id=%d: %v", driverUserID, err)
 				return
 			}
+			sendWelcomeBonusMessageIfNeeded(bot, db, driverTgID, driverUserID)
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, driverUserID)
 		case strings.HasPrefix(data, "reject_driver_"):
 			if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'rejected', license_photo_file_id = NULL, vehicle_doc_file_id = NULL, application_step = 'license_photo', application_admin_sent = 0 WHERE user_id = ?1 AND verification_status != 'approved'`, driverUserID); err != nil {

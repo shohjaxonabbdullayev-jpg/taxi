@@ -307,6 +307,8 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 		return nil, domain.ErrInvalidTransition
 	}
+	firstThreeGranted := false
+	firstThreeTripNum := 0
 	// Driver referral: reward (100000 so'm total) only after referred driver completes 5 trips AND is active with live location (anti-fake).
 	var referredBy sql.NullString
 	var stage2Paid int
@@ -332,23 +334,13 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 			}
 		}
 	}
-	// Five-trip milestone: promotional platform credit (not withdrawable cash), with ledger row.
+	// First 3 finished trips: +10k promo each (idempotent per trip via driver_ledger).
 	var finishedCount int64
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`, driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
-	tripsPendingForBonus := 0
-	if finishedCount < 5 {
-		tripsPendingForBonus = 5 - int(finishedCount)
-	}
-	if granted, err := accounting.TryGrantFiveTripsPromoBonus(ctx, s.db, driverUserID); err != nil {
-		log.Printf("trip_service: five_trips promo bonus (driver=%d): %v", driverUserID, err)
-	} else if granted && s.driverBot != nil {
-		var driverTgID int64
-		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err == nil && driverTgID != 0 {
-			msg := tgbotapi.NewMessage(driverTgID, "🎉 5 ta safar: 80 000 so'm reklama/platforma krediti hisobingizga qo'shildi (naqd emas, yechib bo'lmaydi).")
-			if _, err := s.driverBot.Send(msg); err != nil {
-				log.Printf("trip_service: notify driver 80k promo: %v", err)
-			}
-		}
+	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID, finishedCount); err != nil {
+		log.Printf("trip_service: first_3_trip promo (driver=%d trip=%s): %v", driverUserID, tripID, err)
+	} else {
+		firstThreeGranted, firstThreeTripNum = g, tn
 	}
 	// Internal commission accrual; offset against promo then cash wallet (see driver_ledger); not bank settlement.
 	if s.cfg != nil && fareAmount > 0 {
@@ -405,14 +397,13 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		if _, err := s.driverBot.Send(m); err != nil {
 			log.Printf("trip_service: notify driver finish: %v", err)
 		}
-		// Remind how many trips left until 80k so'm bonus (only if not yet received).
-		if tripsPendingForBonus > 0 && s.driverBot != nil {
-			pendingMsg := fmt.Sprintf("📊 Yana %d ta muvaffaqiyatli safar — 80 000 so'm platforma krediti (naqd emas).", tripsPendingForBonus)
-			if tripsPendingForBonus == 1 {
-				pendingMsg = "📊 Yana 1 ta muvaffaqiyatli safar — 80 000 so'm platforma krediti (naqd emas)."
-			}
-			if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, pendingMsg)); err != nil {
-				log.Printf("trip_service: notify driver trips pending: %v", err)
+		if firstThreeGranted && s.driverBot != nil {
+			var promoBal int64
+			_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&promoBal)
+			if body := accounting.FirstThreeTripBonusTelegramMessage(firstThreeTripNum, promoBal); body != "" {
+				if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, body)); err != nil {
+					log.Printf("trip_service: notify driver first_3_trip promo: %v", err)
+				}
 			}
 		}
 		// After trip finish: set driver inactive only if live location is off. If live is still on, keep them online.

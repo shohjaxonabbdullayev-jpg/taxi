@@ -234,8 +234,10 @@ Routes are mounted on **`/admin/legal/...`**, **`/api/admin/legal/...`**, **`/ap
 ### Driver accounting model (YettiQanot — current stage)
 
 - The platform is an **aggregator**; **live Click/bank settlement for customer fares is not implemented** in this version.
-- **Startup approval bonus (~100k)** and milestones (e.g. five-trip bonus, referrer stage 2, online-time accrual) are **promotional platform credit** (`promo_balance`), recorded in **`driver_ledger`** as `PROMO_GRANTED` where applicable.
+- **Driver onboarding promo (active):** on approval, **20_000** promo credit **once** (`signup_bonus_paid` gate), ledger `PROMO_GRANTED` / `promo` bucket, metadata `source: signup_promo`. **First 3 completed trips:** **+10_000** promo each, one row per trip (`reference_type: first_3_trip_bonus`, `reference_id: trip_id`), idempotent via ledger + partial unique index. **Promo is not real money**, not withdrawable, not routed through `cash_balance` or payouts.
+- **Removed/disabled for drivers:** old ~100k signup, five-trip (80k) milestone bonus, and **online-time promo accrual** worker (no hourly online bonus). **Referrer stage-2** (inviter reward after referred driver qualifies) remains separate promo logic.
 - **Commission** on a finished trip is **`COMMISSION_ACCRUED`** plus **`PROMO_APPLIED_TO_COMMISSION`** / **`CASH_APPLIED_TO_COMMISSION`** as internal offsets—not bank payouts or “deducted from customer payment.”
 - **`promo_balance` must not** be withdrawn, transferred to `cash_balance`, or paid out; guards live in `internal/accounting` and admin **add-balance** tops up **cash** only (see `AdminService.AddDriverBalance` / `GrantCashTopUp`).
+- **`GET /driver/promo-program`** (driver auth) returns `promo_balance`, `signup_promo_granted`, finished-trip count, first-three bonus count, and remaining bonus slots (implementation: `internal/accounting/driver_promo.go`).
 - Migration **`035_driver_promo_cash_ledger.sql`** adds `promo_balance`, `cash_balance`, and `driver_ledger`. After migrate, `balance` stays equal to `promo_balance + cash_balance`.
 - **`payments`** rows for commission/deposit remain for legacy admin views; **`driver_ledger` is authoritative** for audit of promo vs cash behavior.

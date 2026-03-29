@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS driver_ledger (
 
 const createDriverLedgerIndexSQL = `CREATE INDEX IF NOT EXISTS idx_driver_ledger_driver_created ON driver_ledger(driver_id, created_at DESC)`
 
+const first3TripPromoUniqueIndexSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_driver_ledger_first3_trip
+ON driver_ledger(driver_id, reference_id)
+WHERE reference_type = 'first_3_trip_bonus' AND entry_type = 'PROMO_GRANTED'`
+
 // tableExists reports whether a table named name exists (SQLite).
 func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var n int
@@ -58,6 +63,9 @@ func createCanonicalDriverLedger(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, createDriverLedgerIndexSQL); err != nil {
 		return fmt.Errorf("ledgerrepair: create driver_ledger index: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, first3TripPromoUniqueIndexSQL); err != nil {
+		log.Printf("ledgerrepair: first3 trip promo unique index (may fail if duplicates exist): %v", err)
+	}
 	return nil
 }
 
@@ -77,6 +85,9 @@ func Ensure(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if _, has := cols["driver_id"]; has {
+		if _, err := db.ExecContext(ctx, first3TripPromoUniqueIndexSQL); err != nil {
+			log.Printf("ledgerrepair: first3 trip promo unique index: %v", err)
+		}
 		return nil
 	}
 	if _, has := cols["user_id"]; has {

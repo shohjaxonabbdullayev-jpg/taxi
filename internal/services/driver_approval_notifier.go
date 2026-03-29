@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/accounting"
 	"taxi-mvp/internal/driverloc"
 )
 
@@ -48,6 +49,10 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 			continue
 		}
 
+		if err := accounting.TryGrantSignupPromoOnce(ctx, db, userID); err != nil {
+			log.Printf("driver_approval_notifier: signup promo user_id=%d: %v", userID, err)
+		}
+
 		// 1) Profil tasdiqlandi xabari
 		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi.\n\nBuyurtmalar olish uchun Telegramda jonli lokatsiyani ulang — boshqa «onlayn» tugmasi yo‘q.\n\nVideo qo'llanmalar: https://t.me/+iD_MYyWnntE1NmMy")
 		if _, err := driverBot.Send(msg); err != nil {
@@ -58,7 +63,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		// 2) Bonuslar haqida xabar (agar hali yuborilmagan bo'lsa)
 		var welcomeSent int
 		if err := db.QueryRowContext(ctx, `SELECT COALESCE(welcome_bonus_message_sent, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&welcomeSent); err == nil && welcomeSent == 0 {
-			welcome := tgbotapi.NewMessage(telegramID, "🎁 Haydovchi bonuslari\n\n1️⃣ Yangi haydovchi: 100 000 so'm promo/platforma krediti (real pul emas, yechib bo'lmaydi)\n\n2️⃣ Online bonus: promo kredit sifatida, 1 soat → +2 000 so'm. Kunlik limit: 20 000 so'm")
+			welcome := tgbotapi.NewMessage(telegramID, accounting.DriverNewPromoProgramMessage)
 			if _, err := driverBot.Send(welcome); err != nil {
 				log.Printf("driver_approval_notifier: send welcome bonus message user_id=%d: %v", userID, err)
 			} else {

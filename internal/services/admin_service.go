@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"log"
 	"time"
 
 	"taxi-mvp/internal/accounting"
@@ -103,6 +104,11 @@ func (s *AdminService) SetDriverVerification(ctx context.Context, driverUserID i
 	}
 	if err := s.drivers.UpdateVerificationStatus(ctx, driverUserID, status); err != nil {
 		return 0, err
+	}
+	if status == "approved" {
+		if err := accounting.TryGrantSignupPromoOnce(ctx, s.db, driverUserID); err != nil {
+			log.Printf("admin_service: signup promo on approve user_id=%d: %v", driverUserID, err)
+		}
 	}
 	telegramID, err = s.drivers.GetDriverTelegramID(ctx, driverUserID)
 	return telegramID, err
