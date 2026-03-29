@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"strconv"
@@ -39,6 +40,8 @@ func registerAdminLegalRoutes(g *gin.RouterGroup, db *sql.DB) {
 		lg.GET("/summary", h.monitoring)
 		lg.GET("/health", h.monitoring)
 		lg.HEAD("/health", h.monitoringHead)
+		lg.GET("/stats", h.legalStats)
+		lg.HEAD("/stats", h.legalStatsHead)
 		lg.GET("/issues", h.issues)
 		lg.HEAD("/issues", h.issuesHead)
 		lg.GET("/problems", h.issues)
@@ -78,22 +81,25 @@ func (h *adminLegalHTTP) missingLegalHead(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+func (h *adminLegalHTTP) legalStatsHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
 type adminLegalHTTP struct {
 	db *sql.DB
 }
 
 const adminLegalJoin = `INNER JOIN legal_documents ld ON ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1`
 
-func (h *adminLegalHTTP) monitoring(c *gin.Context) {
-	ctx := c.Request.Context()
+// buildLegalMonitoringData loads active docs and driver/rider compliance counts (shared by /monitoring and /stats).
+func (h *adminLegalHTTP) buildLegalMonitoringData(ctx context.Context) (docList []gin.H, counts gin.H, err error) {
 	svc := legal.NewService(h.db)
 	types := []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}
 	docs, err := svc.ActiveDocuments(ctx, types)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "legal tables or query failed", "detail": err.Error()})
-		return
+		return nil, nil, err
 	}
-	docList := make([]gin.H, 0, len(types))
+	docList = make([]gin.H, 0, len(types))
 	for _, t := range types {
 		if d, ok := docs[t]; ok {
 			prev := d.Content
@@ -123,20 +129,57 @@ func (h *adminLegalHTTP) monitoring(c *gin.Context) {
 			AND la.document_type IN ('user_terms','privacy_policy')
 		)`).Scan(&ridersOK)
 
+	counts = gin.H{
+		"drivers_total":           driversTotal,
+		"drivers_fully_compliant": driversOK,
+		"riders_total":            ridersTotal,
+		"riders_fully_compliant":  ridersOK,
+		"drivers_missing_legal":   driversTotal - driversOK,
+		"riders_missing_legal":    ridersTotal - ridersOK,
+	}
+	return docList, counts, nil
+}
+
+func (h *adminLegalHTTP) monitoring(c *gin.Context) {
+	ctx := c.Request.Context()
+	docList, counts, err := h.buildLegalMonitoringData(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "legal tables or query failed", "detail": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                 true,
-		"enabled":            true,
-		"service":            "taxi-mvp",
-		"active_documents":   docList,
+		"ok":                    true,
+		"enabled":               true,
+		"service":               "taxi-mvp",
+		"active_documents":      docList,
 		"active_document_count": len(docList),
-		"counts": gin.H{
-			"drivers_total":           driversTotal,
-			"drivers_fully_compliant": driversOK,
-			"riders_total":            ridersTotal,
-			"riders_fully_compliant":  ridersOK,
-			"drivers_missing_legal":   driversTotal - driversOK,
-			"riders_missing_legal":    ridersTotal - ridersOK,
-		},
+		"counts":                counts,
+	})
+}
+
+// legalStats is the dashboard probe path /admin/legal/stats (same data as monitoring, plus nested "stats").
+func (h *adminLegalHTTP) legalStats(c *gin.Context) {
+	ctx := c.Request.Context()
+	docList, counts, err := h.buildLegalMonitoringData(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "legal tables or query failed", "detail": err.Error()})
+		return
+	}
+	n := len(docList)
+	stats := gin.H{
+		"active_document_count": n,
+	}
+	for k, v := range counts {
+		stats[k] = v
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                    true,
+		"enabled":               true,
+		"service":               "taxi-mvp",
+		"stats":                 stats,
+		"active_documents":      docList,
+		"active_document_count": n,
+		"counts":                counts,
 	})
 }
 
