@@ -66,6 +66,27 @@ func driverAgreementInlineKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
+// splitStringByRunes splits s into chunks of at most maxRunes runes (Telegram limit ~4096 UTF-16 code units; stay safely under).
+func splitStringByRunes(s string, maxRunes int) []string {
+	if maxRunes <= 0 {
+		return []string{s}
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return []string{s}
+	}
+	var out []string
+	for len(runes) > 0 {
+		if len(runes) <= maxRunes {
+			out = append(out, string(runes))
+			break
+		}
+		out = append(out, string(runes[:maxRunes]))
+		runes = runes[maxRunes:]
+	}
+	return out
+}
+
 func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	ctx := context.Background()
 	text, err := legal.NewService(db).DriverAgreementPromptMessage(ctx)
@@ -73,10 +94,18 @@ func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 		log.Printf("driver: legal prompt: %v", err)
 		text = legal.DriverAgreementMessage
 	}
-	m := tgbotapi.NewMessage(chatID, text)
-	m.ReplyMarkup = driverAgreementInlineKeyboard()
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send agreement: %v", err)
+	const maxRunes = 3800
+	chunks := splitStringByRunes(text, maxRunes)
+	kb := driverAgreementInlineKeyboard()
+	for i, chunk := range chunks {
+		m := tgbotapi.NewMessage(chatID, chunk)
+		if i == len(chunks)-1 {
+			m.ReplyMarkup = kb
+		}
+		if _, err := bot.Send(m); err != nil {
+			log.Printf("driver: send agreement chunk %d/%d: %v", i+1, len(chunks), err)
+			return
+		}
 	}
 }
 
@@ -667,6 +696,15 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		return
 	}
 	clearApplicationStep(ctx, db, userID)
+	// Application is "complete" once both doc photos exist (including pending_approval). /start no longer walks the form,
+	// so if the first oferta send failed (e.g. message too long) or the user missed it, offer again here.
+	var verificationStatus sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+	st := strings.TrimSpace(verificationStatus.String)
+	if (st == "pending_approval" || st == "approved") && !driverHasAcceptedAgreement(ctx, db, userID) {
+		sendDriverAgreement(bot, db, chatID)
+		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak. Pastdagi «Qabul qilaman» tugmasini bosing.")
+	}
 	// Rewards and signup bonus are paid when docs are submitted (handleApplicationPhoto).
 	var statusMsgID sql.NullInt64
 	_ = db.QueryRowContext(ctx, `SELECT status_message_id FROM drivers WHERE user_id = ?1`, userID).Scan(&statusMsgID)
