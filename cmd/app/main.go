@@ -63,7 +63,7 @@ func main() {
 	fareSvc := services.NewFareService(database, cfg)
 	tripSvc := services.NewTripService(database, tripRepo, riderBot, driverBot, cfg, hub, fareSvc)
 	tripSvc.OnDriverStatusUpdate = func(telegramID int64) {
-		driverbot.UpdatePinnedStatusForChat(driverBot, database, telegramID)
+		driverbot.UpdatePinnedStatusForChat(driverBot, database, cfg, telegramID)
 	}
 
 	// On each process start (deployment/restart), send a one-time notification to all drivers

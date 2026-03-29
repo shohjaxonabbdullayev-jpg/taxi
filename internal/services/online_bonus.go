@@ -18,7 +18,7 @@ const (
 )
 
 // RunOnlineBonusWorker runs a loop that accrues online time bonus for eligible drivers every tick.
-// Eligible: is_active=1, live_location_active=1, last_live_location_at within 60 seconds.
+// Eligible: live_location_active=1, last_live_location_at within 60 seconds (online = live location only).
 // Credits 2000 so'm per hour, max 20000 so'm per day; resets at midnight. Sends driver messages when earning or when daily limit reached.
 func RunOnlineBonusWorker(ctx context.Context, db *sql.DB, driverBot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(onlineBonusTickInterval)
@@ -43,8 +43,7 @@ func runOnlineBonusAccrual(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		       COALESCE(d.balance, 0), COALESCE(d.online_bonus_so_m_today, 0), d.online_bonus_last_credited_at, COALESCE(d.online_bonus_last_day, '')
 		FROM drivers d
 		JOIN users u ON u.id = d.user_id
-		WHERE COALESCE(d.is_active, 0) = 1
-		  AND COALESCE(d.live_location_active, 0) = 1
+		WHERE COALESCE(d.live_location_active, 0) = 1
 		  AND d.last_live_location_at IS NOT NULL
 		  AND d.last_live_location_at >= ?1`, cutoff)
 	if err != nil {

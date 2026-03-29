@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/driverloc"
 )
 
 // RunDriverApprovalNotifier periodically checks for drivers whose verification_status is 'approved'
@@ -48,7 +49,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		}
 
 		// 1) Profil tasdiqlandi xabari
-		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n📡 Telegramda jonli lokatsiyani ulang — ulanganda avtomatik onlayn bo‘lasiz.\n\nVideo qo'llanmalar va yangiliklar shu yerda!!!\nhttps://t.me/+iD_MYyWnntE1NmMy")
+		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi.\n\nBuyurtmalar olish uchun Telegramda jonli lokatsiyani ulang — boshqa «onlayn» tugmasi yo‘q.\n\nVideo qo'llanmalar: https://t.me/+iD_MYyWnntE1NmMy")
 		if _, err := driverBot.Send(msg); err != nil {
 			log.Printf("driver_approval_notifier: send approved message user_id=%d: %v", userID, err)
 			continue
@@ -68,7 +69,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		// 3) Reply keyboard: live-location help only (online/offline follow Telegram live share).
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
+				tgbotapi.NewKeyboardButton(driverloc.BtnShareLiveLocation),
 			),
 		)
 		kb.ResizeKeyboard = true

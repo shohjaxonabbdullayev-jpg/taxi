@@ -107,22 +107,20 @@ func (r *adminDriverRepo) UpdateDriverBalance(ctx context.Context, id int64, del
 			return err
 		}
 	}
-	// Sync is_active: ACTIVE (1) if balance > 0, INACTIVE (0) if balance <= 0.
+	// Do not force is_active on top-up: driver online state follows Telegram live location only; zero balance still clears active below.
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE drivers SET is_active = CASE WHEN balance > 0 THEN 1 ELSE 0 END WHERE user_id = ?1`, id); err != nil {
+		UPDATE drivers SET is_active = CASE WHEN balance <= 0 THEN 0 ELSE is_active END WHERE user_id = ?1`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// SetDriverBalance sets balance to an exact value and syncs is_active (ACTIVE if balance > 0, else INACTIVE).
+// SetDriverBalance sets balance to an exact value. is_active is cleared when balance <= 0; otherwise unchanged (live location drives online).
 func (r *adminDriverRepo) SetDriverBalance(ctx context.Context, id int64, newBalance int64) error {
-	active := 0
-	if newBalance > 0 {
-		active = 1
-	}
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE drivers SET balance = ?1, is_active = ?2 WHERE user_id = ?3`, newBalance, active, id)
+		UPDATE drivers SET balance = ?1,
+		  is_active = CASE WHEN ?1 <= 0 THEN 0 ELSE is_active END
+		WHERE user_id = ?2`, newBalance, id)
 	return err
 }
 

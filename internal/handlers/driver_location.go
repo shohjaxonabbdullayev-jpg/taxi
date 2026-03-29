@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"database/sql"
 	"net/http"
 	"time"
@@ -135,30 +134,7 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 				}
 			}
 		}
-		// If there is no active (WAITING/STARTED) trip, treat location share as online when balance > 0 or InfiniteDriverBalance.
-		// set is_active=1 and manual_offline=0, run pending-request dispatch, notify driver.
-		var hasActiveTrip string
-		_ = db.QueryRowContext(ctx, `
-			SELECT id FROM trips WHERE driver_user_id = ?1 AND status IN ('WAITING','STARTED') LIMIT 1`,
-			driverID).Scan(&hasActiveTrip)
-		if hasActiveTrip == "" && legalSvc.DriverHasActiveLegal(ctx, driverID) {
-			var balance int64
-			_ = db.QueryRowContext(ctx, `SELECT COALESCE(balance, 0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&balance)
-			allowOnline := balance > 0 || (cfg != nil && cfg.InfiniteDriverBalance)
-			if allowOnline {
-				nowStr := incomingTime.Format("2006-01-02 15:04:05")
-				if stale {
-					nowStr = time.Now().UTC().Format("2006-01-02 15:04:05")
-				}
-				_, _ = db.ExecContext(ctx, `
-					UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1 WHERE user_id = ?2`,
-					nowStr, driverID)
-				// No Telegram message: location is from Mini App; dispatch uses Telegram Live Location only.
-				if matchSvc != nil {
-					go matchSvc.NotifyDriverOfPendingRequests(context.Background(), driverID)
-				}
-			}
-		}
+		// Mini App location updates grid/trip only. Dispatch and "online" for drivers use Telegram live location, not this endpoint.
 
 		if ignoredReason != "" {
 			c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": ignoredReason})

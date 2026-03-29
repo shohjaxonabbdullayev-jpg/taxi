@@ -179,7 +179,7 @@ Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
 
 3. **Driver flow**  
    - Open the driver bot in Telegram.  
-   - Ensure the driver is “online” or in the matching pool.  
+   - Ensure the driver is sharing **Telegram live location** (and is in the matching pool).  
    - Verify that new rider requests appear within `MATCH_RADIUS_KM` and that requests expire after `REQUEST_EXPIRES_SECONDS`.
 
 4. **Matching**  
@@ -195,7 +195,7 @@ Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
    - After a driver accepts a ride in the driver bot, they get an **"Open Trip Map"** button that opens the Mini App.  
    - The Mini App (Leaflet + OpenStreetMap) shows: driver location, pickup marker, route driver→pickup, **START TRIP** and **FINISH TRIP** buttons.  
    - Driver location is sent to the backend every few seconds via `POST /driver/location`.  
-   - **After FINISH TRIP:** When the driver presses "SAFARNI TUGATISH", the Mini App must call `POST /trip/finish` and then **immediately** send the current GPS with `POST /driver/location` (same auth). The backend will then set the driver available and run pending-request dispatch so new orders arrive without the driver pressing Online.  
+   - **After FINISH TRIP:** When the driver presses "SAFARNI TUGATISH", the Mini App must call `POST /trip/finish` and may send `POST /driver/location` for map/trip tracking. **Matching and “online” for new orders use Telegram live location only** (`POST /driver/location` does not put the driver in the dispatch pool).  
    - Set `WEBAPP_URL` in `.env` to the public URL where `/webapp` is served (same server as the API).
 
 7. **Shutdown**  
@@ -208,10 +208,9 @@ Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
 
 If logs show `no such column: document_type` on `legal_documents`, the database has an incompatible older `legal_*` layout (or a partial deploy). Run migrations through **`034_legal_documents_schema_rebuild.sql`**, which drops and recreates `legal_documents`, `legal_acceptances`, and `legal_pending_resume` with the schema the app expects. **Legal acceptance rows are cleared**; users/drivers accept again after migrate.
 
-### Driver legal re-accept and live location
+### Driver bot: live location is the only “online” UX (YettiQanot)
 
-When a driver must re-accept legal documents while they were **online** and/or **sharing Telegram live location**, the bot stores a `driver_relive` resume intent. After acceptance, the driver is **not** marked online automatically: we clear `is_active`, `live_location_active`, and `last_live_location_at` so dispatch state matches reality.
-
-The driver then sees an explicit Uzbek message that **live location must be shared again manually** in Telegram (Share Live Location), followed by the existing live-location instruction flow (keyboard + steps). This is required because **Telegram does not allow the bot or server to resume a live location session** after interruption, and it keeps legal/operational state consistent.
-
-Cold “go online” after legal (driver was offline and not sharing live) still uses the `driver_online` resume path and `handleOnline` as before.
+- **Visible state:** A driver is treated as **online** only while **Telegram live location** is active (fresh `last_live_location_at`, same window as dispatch). There is **no** separate reply-keyboard “go online / go offline” flow; `drivers.is_active` for matching is still updated from the live-location handler but eligibility is **live location + balance + legal**.
+- **Legal re-accept:** If legal changes interrupt an active live-location session, `legal_pending_resume.kind = driver_relive` is used. After acceptance we **clear** live/online fields and send a short message asking the driver to **re-share live location** (no generic “continue” and no auto-online). Telegram cannot resume a live session for the user.
+- **Messaging:** The pinned **status card** is **edited in place** when possible; `/status` refreshes that pin instead of sending a duplicate full status. Live-location **step-by-step instructions** are sent only on first onboarding (when appropriate), when the driver taps **“Jonli lokatsiyani ulashish”**, or in the legal re-share case above—not after every trip.
+- **Balances on the status card:** The schema currently has a single `drivers.balance`. The panel shows it as **platform krediti** with the “not real cash” disclaimer and **pul balansi** as `0` until a separate ledger exists.

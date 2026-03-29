@@ -135,8 +135,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE d.is_active = 1`+balanceCond+`
-		  AND COALESCE(d.live_location_active, 0) = 1
+		WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
 		  AND d.verification_status = 'approved'
 		  AND `+legal.SQLDriverDispatchLegalOK+`
 		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
@@ -153,8 +152,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		rows, _ = s.db.QueryContext(ctx, `
 			SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
 			FROM drivers d JOIN users u ON u.id = d.user_id
-			WHERE d.is_active = 1`+balanceCond+`
-			  AND COALESCE(d.live_location_active, 0) = 1
+			WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
 			  AND d.verification_status = 'approved'
 			  AND `+legal.SQLDriverDispatchLegalOK+`
 			  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
@@ -195,7 +193,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		}
 	}
 	if len(candidates) == 0 {
-		log.Printf("match_service: no eligible drivers for request %s (is_active=1%s, within radius)", requestID, balanceCond)
+		log.Printf("match_service: no eligible drivers for request %s (live location + balance%s, within radius)", requestID, balanceCond)
 		return
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].DistKm < candidates[j].DistKm })

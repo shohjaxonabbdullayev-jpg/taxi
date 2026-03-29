@@ -11,6 +11,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/driverloc"
 	"taxi-mvp/internal/logger"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/utils"
@@ -419,7 +420,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		driverSummary := formatDriverTripCompletionMessage(distanceM, fareAmount)
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
+				tgbotapi.NewKeyboardButton(driverloc.BtnShareLiveLocation),
 			),
 		)
 		kb.ResizeKeyboard = true
@@ -456,7 +457,6 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 		// Live-location reminder only when driver is NOT sharing live, every 3 trips, and location was not just auto-updated (e.g. mini app).
 		// Run after a short delay so mini app location update can land first; then we skip reminder if last_seen_at was recently updated.
-		go s.maybeSendLiveLocationHintAfterTripDelayed(driverUserID, driverTelegramID)
 		if s.OnDriverStatusUpdate != nil {
 			s.OnDriverStatusUpdate(driverTelegramID)
 		}
@@ -479,63 +479,6 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	return &TripActionResult{Result: "updated", Status: domain.TripStatusFinished}, nil
 }
 
-const liveLocationBilingualInstruction = "📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
-const liveLocationInstructionMessage   = "📍 Jonli lokatsiyani yoqsangiz, yaqin buyurtmalar sizga tezroq keladi.\n\n" + liveLocationBilingualInstruction
-const liveLocationHintCooldownHours = 8
-const liveLocationActiveSecReminder  = 90 // same as dispatch: only last_live_location_at within this counts as "sharing live"
-
-const liveLocationReminderDelayAfterTrip = 5 * time.Second
-
-// maybeSendLiveLocationHintAfterTripDelayed runs the reminder check after a delay so that if the mini app
-// sends location right after trip finish, we see the updated last_seen_at and skip the reminder.
-func (s *TripService) maybeSendLiveLocationHintAfterTripDelayed(driverUserID int64, driverTelegramID int64) {
-	time.Sleep(liveLocationReminderDelayAfterTrip)
-	s.maybeSendLiveLocationHintAfterTrip(context.Background(), driverUserID, driverTelegramID)
-}
-
-// maybeSendLiveLocationHintAfterTrip sends the live location instruction after every completed trip,
-// only if the driver is NOT sharing live (last_live_location_at within 90s), hint cooldown allows, and location was not just updated.
-func (s *TripService) maybeSendLiveLocationHintAfterTrip(ctx context.Context, driverUserID int64, driverTelegramID int64) {
-	var lastLive, lastHint, lastSeenAt sql.NullString
-	if err := s.db.QueryRowContext(ctx, `SELECT last_live_location_at, live_location_hint_last_sent_at, last_seen_at FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLive, &lastHint, &lastSeenAt); err != nil {
-		return
-	}
-	liveCutoff := time.Now().UTC().Add(-time.Duration(liveLocationActiveSecReminder) * time.Second)
-	if lastLive.Valid && lastLive.String != "" {
-		t, err := time.ParseInLocation("2006-01-02 15:04:05", lastLive.String, time.UTC)
-		if err == nil && t.After(liveCutoff) {
-			return // driver is sharing live location (update within 90s), no instruction
-		}
-	}
-	cutoff := time.Now().UTC().Add(-time.Duration(liveLocationHintCooldownHours) * time.Hour)
-	if lastSeenAt.Valid && lastSeenAt.String != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", lastSeenAt.String); err == nil {
-			if time.Since(t) < 15*time.Second {
-				return // location was just updated (e.g. mini app after finish), skip reminder
-			}
-		}
-	}
-	if lastHint.Valid && lastHint.String != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", lastHint.String); err == nil && t.After(cutoff) {
-			return // already sent recently, avoid spam
-		}
-	}
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	m := tgbotapi.NewMessage(driverTelegramID, liveLocationInstructionMessage)
-	m.ReplyMarkup = kb
-	if _, err := s.driverBot.Send(m); err != nil {
-		log.Printf("trip_service: send live location instruction after trip: %v", err)
-		return
-	}
-	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-	_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
-}
-
 // normalizeFare returns display fare: if rawFare <= 50 then 0; if rawFare > 50 then round to nearest 100 so'm.
 func normalizeFare(rawFare int64) int64 {
 	if rawFare <= 50 {
@@ -552,7 +495,7 @@ func formatTripSummary(distanceM, fareAmount int64, riderBonusUsed int64) string
 // formatDriverTripCompletionMessage returns the driver trip completion message (Mini App finish): status + live location hint + distance/fare.
 func formatDriverTripCompletionMessage(distanceM, fareAmount int64) string {
 	km := float64(distanceM) / 1000
-	return fmt.Sprintf("✅ Safar tugadi.\n📡 Jonli lokatsiya yoqilgan bo'lsa, yaqin buyurtmalar avtomatik keladi.\n\nMasofa: %.2f km\nNarx: %d so'm", km, fareAmount)
+	return fmt.Sprintf("✅ Safar tugadi.\nMasofa: %.2f km\nNarx: %d so'm\n\nYangi buyurtmalar faqat jonli lokatsiya orqali.", km, fareAmount)
 }
 
 // CancelByDriver sets trip to CANCELLED_BY_DRIVER when status is WAITING or STARTED. Idempotent if already CANCELLED_BY_DRIVER.
@@ -583,7 +526,6 @@ func (s *TripService) CancelByDriver(ctx context.Context, tripID string, driverU
 		}
 		return nil, domain.ErrInvalidTransition
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = CASE WHEN COALESCE(manual_offline,0) = 0 THEN 1 ELSE is_active END WHERE user_id = ?1`, driverUserID)
 	if riderUserID != 0 {
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil {
@@ -638,7 +580,6 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 		return nil, domain.ErrInvalidTransition
 	}
 	if driverUserID != 0 {
-		_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = CASE WHEN COALESCE(manual_offline,0) = 0 THEN 1 ELSE is_active END WHERE user_id = ?1`, driverUserID)
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&telegramID); err == nil {
 			msg := tgbotapi.NewMessage(telegramID, "Mijoz safarni bekor qildi.")
