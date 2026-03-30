@@ -50,7 +50,6 @@ const (
 	liveLocationInactiveWarningMessage = "📍 Jonli lokatsiya o'chdi.\nBuyurtmalar kelmaydi.\n\nQayta yoqish: " + liveLocationBilingualInstruction
 	// Live is on but driver cannot receive orders (e.g. low balance); once per cooldown.
 	offlineButLiveReminderMessage  = "📡 Jonli lokatsiya yoqilgan.\n\nBuyurtmalar olish uchun balansingiz yetarli bo‘lishi kerak. Balansni to‘ldiring."
-	liveLocationHintCooldownHours  = 8
 	insufficientBalanceMessage     = "Balansingiz yetarli emas. So'rovlar olish uchun balansni to'ldiring."
 	// Registration: car types (Uzbekistan taxi market). "Boshqa" allows manual input.
 	carTypeBoshqa = "Boshqa"
@@ -290,23 +289,6 @@ func isDriverSharingLiveLocation(ctx context.Context, db *sql.DB, driverUserID i
 	return t.After(cutoff)
 }
 
-// shouldShowLiveLocationInstructionForStatic returns true if we should show the instruction after static location:
-// driver is NOT sharing live and we have not sent the (static) hint in the last 8h.
-func shouldShowLiveLocationInstructionForStatic(ctx context.Context, db *sql.DB, driverUserID int64) bool {
-	if isDriverSharingLiveLocation(ctx, db, driverUserID) {
-		return false
-	}
-	var lastHint sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT live_location_hint_last_sent_at FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastHint)
-	cutoff := time.Now().UTC().Add(-time.Duration(liveLocationHintCooldownHours) * time.Hour)
-	if lastHint.Valid && lastHint.String != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", lastHint.String); err == nil && t.After(cutoff) {
-			return false
-		}
-	}
-	return true
-}
-
 const offlineLiveReminderCooldownMin = 60
 
 // sendOfflineButLiveReminderIfNeeded sends a throttled reminder when live is on but the driver cannot receive orders (e.g. low balance).
@@ -332,12 +314,8 @@ func sendOfflineButLiveReminderIfNeeded(bot *tgbotapi.BotAPI, db *sql.DB, chatID
 	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_offline_reminder_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
 }
 
-// liveLocationButtonInstructionCooldownMin: do not resend the same instruction if sent this recently (button press spam).
-const liveLocationButtonInstructionCooldownMin = 3
-
-// handleLiveLocationInstruction runs when the driver presses the live-share reply button.
-// If already sharing live, sends a short ack. During instruction cooldown, sends a brief reminder instead of silence.
-// Otherwise sends the illustrated / text guide (throttled full resend via live_location_hint_last_sent_at).
+// handleLiveLocationInstruction runs when the driver taps the live-share reply button (request_location) or sends the label as text.
+// If already sharing live Telegram updates, sends a short ack. Otherwise always sends the illustrated guide (photo + caption when available).
 func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	ctx := context.Background()
 	var userID int64
@@ -364,19 +342,6 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 			log.Printf("driver: send live-already-sharing ack: %v", err)
 		}
 		return
-	}
-	var lastHint sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT live_location_hint_last_sent_at FROM drivers WHERE user_id = ?1`, userID).Scan(&lastHint)
-	if lastHint.Valid && lastHint.String != "" {
-		if t, err := parseUTC(lastHint.String); err == nil && time.Since(t) < liveLocationButtonInstructionCooldownMin*time.Minute {
-			kb := getDriverKeyboard(db, userID)
-			m := tgbotapi.NewMessage(chatID, "📍 Qo‘llanma yuqorida. Jonli lokatsiyani 📎 → Geopozitsiya → «Share Live Location» orqali ulang.")
-			m.ReplyMarkup = kb
-			if _, err := bot.Send(m); err != nil {
-				log.Printf("driver: send live-location cooldown ack: %v", err)
-			}
-			return
-		}
 	}
 	kb := getDriverKeyboard(db, userID)
 	if len(liveLocationStepsPNG) > 0 {
