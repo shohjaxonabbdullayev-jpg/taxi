@@ -605,7 +605,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		driverSummary := formatDriverTripCompletionMessage(distanceM, fareAmount)
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton(driverloc.BtnShareLiveLocation),
+				driverloc.ReplyKeyboardButtonShareLiveLocation(),
 			),
 		)
 		kb.ResizeKeyboard = true

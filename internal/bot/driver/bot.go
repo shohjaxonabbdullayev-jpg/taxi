@@ -40,7 +40,7 @@ const (
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
 	liveLocationActiveSeconds = 90
 	// Onboarding: shown when driver completes registration (live location = online; no separate online button).
-	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nBuyurtmalar olish uchun pastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasini bosing va Telegramda jonli lokatsiyani ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
+	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nPastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasini bosing — xarita ochiladi; joyingizni yuboring. Keyin 📎 → Location → «Share Live Location» orqali jonli lokatsiyani ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
 
 	// Welcome promo message: shown once after registration (same copy as approval notifier / accounting constant).
 	welcomeBonusMessage = accounting.DriverNewPromoProgramMessage
@@ -52,8 +52,6 @@ const (
 	offlineButLiveReminderMessage  = "📡 Jonli lokatsiya yoqilgan.\n\nBuyurtmalar olish uchun balansingiz yetarli bo‘lishi kerak. Balansni to‘ldiring."
 	liveLocationHintCooldownHours  = 8
 	insufficientBalanceMessage     = "Balansingiz yetarli emas. So'rovlar olish uchun balansni to'ldiring."
-	staticLocationRejectionMessage = "❌ Oddiy lokatsiya qabul qilinmaydi.\n\nBuyurtmalar olish uchun jonli lokatsiya ulashing.\n\n" + liveLocationBilingualInstruction
-
 	// Registration: car types (Uzbekistan taxi market). "Boshqa" allows manual input.
 	carTypeBoshqa = "Boshqa"
 )
@@ -226,6 +224,13 @@ func isDigitsOnly(s string) bool {
 		}
 	}
 	return true
+}
+
+// trimKeyboardNoise trims spaces and invisible/format chars some Telegram clients append to reply-button text.
+func trimKeyboardNoise(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\u200e\u200f\u200b\u200c\u200d\ufeff")
+	return s
 }
 
 // getUserLang and alphabet selection were removed; bot now always uses Uzbek Latin.
@@ -436,7 +441,7 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 // (online/offline follow Telegram live location share/stop).
 func driverKeyboardApprovedMain() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnLiveLocation)),
+		tgbotapi.NewKeyboardButtonRow(driverloc.ReplyKeyboardButtonShareLiveLocation()),
 	)
 	kb.ResizeKeyboard = true
 	return kb
@@ -680,8 +685,8 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 
 	// Handle keyboard button presses first so they always work (e.g. Live Location instruction even during registration).
-	switch strings.TrimSpace(msg.Text) {
-	case btnLiveLocation:
+	// Match both plain-text replies and labels with stray bidi/zero-width characters.
+	if trimKeyboardNoise(msg.Text) == btnLiveLocation {
 		handleLiveLocationInstruction(bot, db, chatID, telegramID)
 		return
 	}
@@ -1561,29 +1566,11 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	if loc == nil {
 		return
 	}
-	// Static location: live_period is null/0 — do not update coordinates or last_seen_at; send rejection once per cooldown to avoid spam.
+	// One-shot / static location (live_period == 0): from the reply “request location” button or a map pin.
+	// Dispatch requires Telegram *live* location; show the same guided flow as the text button (throttled inside).
 	if loc.LivePeriod <= 0 {
 		if !silent {
-			ctx := context.Background()
-			var userID int64
-			if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-				return
-			}
-			var lastRej sql.NullString
-			_ = db.QueryRowContext(ctx, `SELECT static_location_rejection_last_sent_at FROM drivers WHERE user_id = ?1`, userID).Scan(&lastRej)
-			if lastRej.Valid && lastRej.String != "" {
-				if t, err := parseUTC(lastRej.String); err == nil && time.Since(t) < 2*time.Minute {
-					return
-				}
-			}
-			kb := getDriverKeyboard(db, userID)
-			m := tgbotapi.NewMessage(chatID, staticLocationRejectionMessage)
-			m.ReplyMarkup = kb
-			if _, err := bot.Send(m); err != nil {
-				return
-			}
-			nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-			_, _ = db.ExecContext(ctx, `UPDATE drivers SET static_location_rejection_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
+			handleLiveLocationInstruction(bot, db, chatID, telegramID)
 		}
 		return
 	}

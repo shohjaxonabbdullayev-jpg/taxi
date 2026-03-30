@@ -74,7 +74,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		// 3) Reply keyboard: live-location help only (online/offline follow Telegram live share).
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton(driverloc.BtnShareLiveLocation),
+				driverloc.ReplyKeyboardButtonShareLiveLocation(),
 			),
 		)
 		kb.ResizeKeyboard = true
