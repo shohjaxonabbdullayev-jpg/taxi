@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose NO TRANSACTION
 -- Split privacy policy into rider/user vs driver versions.
 -- - Keeps legacy privacy_policy rows/acceptances for history.
 -- - Introduces privacy_policy_user and privacy_policy_driver as new document types.
@@ -6,7 +7,6 @@
 -- - Activates new policies and deactivates legacy privacy_policy.
 
 PRAGMA foreign_keys=OFF;
-BEGIN;
 
 -- Rebuild legal_documents with expanded document_type CHECK.
 DROP INDEX IF EXISTS idx_legal_documents_one_active_per_type;
@@ -109,13 +109,12 @@ YettiQanot haydovchi ma’lumotlarini xizmatni ta’minlash va haydovchini/trans
 UPDATE users SET terms_accepted = 0 WHERE role = 'rider';
 UPDATE drivers SET terms_accepted = 0;
 
-COMMIT;
 PRAGMA foreign_keys=ON;
 
 -- +goose Down
+-- +goose NO TRANSACTION
 -- Revert by removing new policy types and restoring legacy shared privacy_policy as active.
 PRAGMA foreign_keys=OFF;
-BEGIN;
 
 DELETE FROM legal_acceptances WHERE document_type IN ('privacy_policy_user','privacy_policy_driver');
 DELETE FROM legal_documents WHERE document_type IN ('privacy_policy_user','privacy_policy_driver');
@@ -125,5 +124,4 @@ SET is_active = 1
 WHERE document_type = 'privacy_policy'
   AND version = (SELECT MAX(version) FROM legal_documents WHERE document_type = 'privacy_policy');
 
-COMMIT;
 PRAGMA foreign_keys=ON;
