@@ -440,6 +440,39 @@ func TestMarkArrived_AlreadyArrivedNoop_SendsRiderOnPress(t *testing.T) {
 	}
 }
 
+func TestMarkArrived_AlreadyArrivedNoop_SendsRiderEvenIfPickupGuardWouldFail(t *testing.T) {
+	db := setupMarkArrivedTestDB(t)
+	defer db.Close()
+	tripID := "trip-noop-stale"
+	reqID := "req-noop-stale"
+	const driverID int64 = 10
+	const riderID int64 = 11
+	const riderTg int64 = 1001
+	const driverTg int64 = 2002
+	pickLat, pickLng := 40.23, 68.843
+
+	// Old live location (would fail ensureDriverNearPickup), but ARRIVED noop must still notify rider.
+	staleAt := time.Now().UTC().Add(-time.Duration(tripPickupLiveFreshSeconds+10) * time.Second)
+	seedTripArrivedNearPickup(t, db, tripID, reqID, driverID, riderID, riderTg, driverTg, pickLat, pickLng, staleAt)
+
+	riderBot := &fakeTelegramBot{}
+	driverBot := &fakeTelegramBot{}
+	cfg := &config.Config{PickupStartMaxMeters: 500}
+	svc := NewTripService(db, repositories.NewTripRepo(db), riderBot, driverBot, cfg, nil, nil, nil)
+
+	res, err := svc.MarkArrived(context.Background(), tripID, driverID)
+	if err != nil {
+		t.Fatalf("MarkArrived: %v", err)
+	}
+	if res == nil || res.Result != "noop" || res.Status != domain.TripStatusArrived {
+		t.Fatalf("want noop ARRIVED, got %+v", res)
+	}
+	riderMsgs := riderBot.messagesTo(riderTg)
+	if len(riderMsgs) != 1 || riderMsgs[0] != testRiderText {
+		t.Fatalf("rider messages after noop(stale): %q want one body %q", riderMsgs, testRiderText)
+	}
+}
+
 func TestMarkArrived_AlreadyArrivedNoop_EachPressNotifiesRider(t *testing.T) {
 	db := setupMarkArrivedTestDB(t)
 	defer db.Close()

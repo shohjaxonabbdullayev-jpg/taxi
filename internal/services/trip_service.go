@@ -272,6 +272,26 @@ func (s *TripService) assertMarkArrivedDriverAndPickup(ctx context.Context, trip
 	return nil
 }
 
+// assertMarkArrivedDriverMatches checks only trip.driver_user_id matches the caller.
+// Used for ARRIVED noop retries so stale live location doesn't block rider notifications.
+func (s *TripService) assertMarkArrivedDriverMatches(ctx context.Context, tripID string, driverUserID int64) error {
+	var dbDriver int64
+	err := s.db.QueryRowContext(ctx, `SELECT driver_user_id FROM trips WHERE id = ?1`, tripID).Scan(&dbDriver)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
+			return domain.ErrTripNotFound
+		}
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, err)
+		return err
+	}
+	if dbDriver != driverUserID {
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=driver_mismatch", tripID, driverUserID)
+		return domain.ErrInvalidTransition
+	}
+	return nil
+}
+
 // markArrivedNotifyEnterAndSend logs ARRIVED_NOTIFY_ENTER then notifyArrivedAtPickup (every driver Arrived press).
 func (s *TripService) markArrivedNotifyEnterAndSend(ctx context.Context, tripID string, driverUserID int64) (riderUserID int64) {
 	if err := s.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID); err != nil {
@@ -296,7 +316,8 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 		return nil, err
 	}
 	if current == domain.TripStatusArrived {
-		if err := s.assertMarkArrivedDriverAndPickup(ctx, tripID, driverUserID); err != nil {
+		// Trip is already ARRIVED: don't block retry notifications due to stale live location.
+		if err := s.assertMarkArrivedDriverMatches(ctx, tripID, driverUserID); err != nil {
 			return nil, err
 		}
 		_ = s.markArrivedNotifyEnterAndSend(ctx, tripID, driverUserID)
