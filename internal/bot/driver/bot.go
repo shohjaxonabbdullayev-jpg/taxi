@@ -40,7 +40,7 @@ const (
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
 	liveLocationActiveSeconds = 90
 	// Onboarding: shown when driver completes registration (live location = online; no separate online button).
-	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nPastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasini bosing — xarita ochiladi; joyingizni yuboring. Keyin 📎 → Location → «Share Live Location» orqali jonli lokatsiyani ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
+	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nPastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasi faqat qo‘llanmani ko‘rsatadi (jonli lokatsiyani o‘zi yoqmaysiz). Jonli lokatsiyani 📎 → Location → «Share Live Location» orqali ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
 
 	// Welcome promo message: shown once after registration (same copy as approval notifier / accounting constant).
 	welcomeBonusMessage = accounting.DriverNewPromoProgramMessage
@@ -314,8 +314,8 @@ func sendOfflineButLiveReminderIfNeeded(bot *tgbotapi.BotAPI, db *sql.DB, chatID
 	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_offline_reminder_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
 }
 
-// handleLiveLocationInstruction runs when the driver taps the live-share reply button (request_location) or sends the label as text.
-// If already sharing live Telegram updates, sends a short ack. Otherwise always sends the illustrated guide (photo + caption when available).
+// handleLiveLocationInstruction runs when the driver presses the reply «Jonli lokatsiyani ulashish» button (plain text)
+// or after a one-shot map pin. Always sends the full illustrated guide; it does not start/stop Telegram live location.
 func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	ctx := context.Background()
 	var userID int64
@@ -331,15 +331,6 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		m.ReplyMarkup = kb
 		if _, err := bot.Send(m); err != nil {
 			log.Printf("driver: send pending verification live-location message: %v", err)
-		}
-		return
-	}
-	if isDriverSharingLiveLocation(ctx, db, userID) {
-		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, "✅ Jonli lokatsiya ulangan. Pozitsiyangiz avtomatik yangilanmoqda.")
-		m.ReplyMarkup = kb
-		if _, err := bot.Send(m); err != nil {
-			log.Printf("driver: send live-already-sharing ack: %v", err)
 		}
 		return
 	}
@@ -402,8 +393,8 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 	}
 }
 
-// driverKeyboardApprovedMain is the main reply keyboard for approved drivers: only the live-location help button
-// (online/offline follow Telegram live location share/stop).
+// driverKeyboardApprovedMain is the main reply keyboard for approved drivers: «Jonli lokatsiyani ulashish»
+// opens only the instructional guide (plain text button); online/offline still follow Telegram live share.
 func driverKeyboardApprovedMain() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(driverloc.ReplyKeyboardButtonShareLiveLocation()),

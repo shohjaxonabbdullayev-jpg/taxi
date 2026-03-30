@@ -265,7 +265,7 @@ All amounts below are **promo platform credit** unless stated otherwise: **not r
 
 1. **Start:** `docker compose up --build` (or local binary) with valid **Turso** env and **migrations applied**.
 2. **Rider:** Create request; confirm pricing and dispatch behavior.
-3. **Driver:** Tap **«Jonli lokatsiyani ulashish»** (reply keyboard uses Telegram **`request_location`** — map opens; a one-shot pin triggers the bot’s step-by-step guide). Share **live** location via 📎 for real online/dispatch; accept request; open Mini App; near pickup, **`/trip/start`** (or **`/trip/arrived`** then **`/trip/start`**); **finish** trip.
+3. **Driver:** Tap **«Jonli lokatsiyani ulashish»** (plain reply label: bot always sends the **full** illustrated guide; it does not open the map or change live share). Turn on **live** location via 📎 for real online/dispatch; accept request; open Mini App; near pickup, **`/trip/start`** (or **`/trip/arrived`** then **`/trip/start`**); **finish** trip.
 4. **Finish:** Rider and driver notifications; **promo** and **referral** grants visible in DB (`drivers.promo_balance`, `driver_ledger`).
 5. **Admin / legal:** If used, verify verification and legal acceptance flows.
 6. **Shutdown:** SIGINT/SIGTERM; process exits cleanly.
@@ -285,7 +285,7 @@ Admin routes (drivers, riders, payments, verification) are registered from **`ha
 ### Driver bot UX (live location)
 
 - **Online** for matching = **Telegram live location** freshness (+ balance + legal + approval).
-- Reply keyboard **«Jonli lokatsiyani ulashish»** is built with **`request_location`** (`internal/driverloc.ReplyKeyboardButtonShareLiveLocation`) so Telegram opens the map; sending a **non-live** pin still earns the illustrated instructions (not dispatch). True **live** share uses 📎 → Location → *Share Live Location* (see caption from **`internal/driverloc/texts.go`**).
+- Reply keyboard **«Jonli lokatsiyani ulashish»** is a **plain text** button (`internal/driverloc.ReplyKeyboardButtonShareLiveLocation`): every press triggers the **full** photo + caption guide, including if live location is already active; the bot does **not** start/stop or “restart” live location. Actual live share remains 📎 → Location → *Share Live Location* (see **`internal/driverloc/texts.go`** and embedded **`live_location_steps.png`**).
 - Instruction **image** is embedded at build time: **`internal/bot/driver/live_location_steps.png`** (`//go:embed` in **`internal/bot/driver/bot.go`**). Replace that file to update the screenshot guide; keep captions within Telegram’s **~1024** character caption limit.
 - Pinned **status** message is edited when possible; **`/status`** refreshes it.
 - **`driver_ledger`** and **`GET /admin/drivers/:id/ledger`** expose promo vs cash audit.

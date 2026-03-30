@@ -2,9 +2,9 @@ package driverloc
 
 import tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-// ReplyKeyboardButtonShareLiveLocation returns a reply-keyboard button that opens Telegram’s
-// location picker (request_location). Plain NewKeyboardButton(BtnShareLiveLocation) only sends
-// text and does not request coordinates — use this for the driver “share location” flow.
+// ReplyKeyboardButtonShareLiveLocation returns a plain reply-keyboard label: tap sends text only.
+// The bot responds with the full live-location guide every time; it does not use request_location
+// (no map picker / no implicit location actions).
 func ReplyKeyboardButtonShareLiveLocation() tgbotapi.KeyboardButton {
-	return tgbotapi.NewKeyboardButtonLocation(BtnShareLiveLocation)
+	return tgbotapi.NewKeyboardButton(BtnShareLiveLocation)
 }
