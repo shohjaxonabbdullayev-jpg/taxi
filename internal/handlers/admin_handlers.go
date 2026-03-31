@@ -77,8 +77,8 @@ type adjustBalanceRequest struct {
 }
 
 type deductBalanceRequest struct {
-	Amount int64  `json:"amount"` // positive amount to deduct from cash_balance
-	Reason string `json:"reason"`
+	Amount int64  `json:"amount" form:"amount"`   // positive amount to deduct from cash_balance
+	Reason string `json:"reason" form:"reason"`   // optional, for audit/log
 }
 
 // VerifyDriverRequest is the body for POST /admin/drivers/:id/verify.
@@ -212,7 +212,7 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 		return
 	}
 	var req deductBalanceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
