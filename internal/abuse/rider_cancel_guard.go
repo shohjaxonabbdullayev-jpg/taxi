@@ -203,10 +203,15 @@ func FormatRemaining(until time.Time, now time.Time) string {
 	}
 	minutes := int(dur.Minutes() + 0.5)
 	if minutes < 60 {
-		return fmtDurationUz(minutes, 0)
+		return fmtDurationUz(0, minutes)
 	}
 	hours := minutes / 60
 	mins := minutes % 60
+	// For long blocks, express in full days when possible.
+	if hours >= 24 && mins == 0 {
+		days := hours / 24
+		return fmtDurationUzDays(days)
+	}
 	return fmtDurationUz(hours, mins)
 }
 
@@ -217,7 +222,14 @@ func fmtDurationUz(hours, minutes int) string {
 	if hours > 0 {
 		return fmt.Sprintf("%d soatdan so‘ng", hours)
 	}
-	return fmt.Sprintf("%d daqiqadan so‘ng", minutes)
+	return fmt.Sprintf("%d minutdan so‘ng", minutes)
+}
+
+func fmtDurationUzDays(days int) string {
+	if days <= 1 {
+		return "1 kundan so‘ng"
+	}
+	return fmt.Sprintf("%d kundan so‘ng", days)
 }
 
 // --- internal helpers ---
