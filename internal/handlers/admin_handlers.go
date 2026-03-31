@@ -267,13 +267,20 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 		}
 	}
 
+	req.Reason = strings.TrimSpace(req.Reason)
 	if req.Amount <= 0 {
 		log.Printf("admin_deduct_balance: non-positive amount driver_id=%d amount=%d reason=%q", driverID, req.Amount, req.Reason)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be greater than zero"})
 		return
 	}
+	if req.Reason == "" {
+		log.Printf("admin_deduct_balance: empty reason driver_id=%d amount=%d", driverID, req.Amount)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason must not be empty"})
+		return
+	}
 
-	promo, cash, total, isActive, deducted, wasCapped, err := h.svc.DeductDriverCashBalance(c.Request.Context(), driverID, req.Amount, req.Reason)
+	ctx := c.Request.Context()
+	promo, cash, total, isActive, deducted, wasCapped, err := h.svc.DeductDriverCashBalance(ctx, driverID, req.Amount, req.Reason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("admin_deduct_balance: driver not found driver_id=%d amount=%d reason=%q", driverID, req.Amount, req.Reason)
@@ -283,6 +290,20 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 		log.Printf("admin_deduct_balance: service error driver_id=%d amount=%d reason=%q err=%v", driverID, req.Amount, req.Reason, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Notify driver via Telegram after successful deduction (best-effort; does not affect response).
+	if h.driverBot != nil && deducted > 0 && h.db != nil {
+		var telegramID int64
+		if err := h.db.QueryRowContext(ctx, `SELECT u.telegram_id FROM users u JOIN drivers d ON d.user_id = u.id WHERE d.user_id = ?1`, driverID).Scan(&telegramID); err != nil {
+			log.Printf("admin_deduct_balance: driver telegram lookup failed driver_id=%d err=%v", driverID, err)
+		} else if telegramID != 0 {
+			text := fmt.Sprintf("Balansingizdan %d so'm yechildi.\nSabab: %s.\n\nJoriy naqd balans: %d so'm.", deducted, req.Reason, cash)
+			msg := tgbotapi.NewMessage(telegramID, text)
+			if _, err := h.driverBot.Send(msg); err != nil {
+				log.Printf("admin_deduct_balance: telegram notify failed driver_id=%d telegram_id=%d err=%v", driverID, telegramID, err)
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success":           true,
