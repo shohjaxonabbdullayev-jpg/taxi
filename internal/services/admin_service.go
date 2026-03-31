@@ -146,6 +146,12 @@ func (s *AdminService) AdjustDriverBalance(ctx context.Context, driverID int64, 
 		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promo, &cash, &total); err != nil {
 		return 0, 0, 0, 0, err
 	}
+
+	// Business rule: any decrease must come entirely from cash_balance; promo_balance is never reduced.
+	if delta < 0 && -delta > cash {
+		return 0, 0, 0, 0, fmt.Errorf("Promo balansni kamaytirib bo‘lmaydi")
+	}
+
 	newTotal := total + delta
 	if newTotal < promo {
 		return 0, 0, 0, 0, fmt.Errorf("new total balance (%d) cannot be less than promo_balance (%d)", newTotal, promo)
