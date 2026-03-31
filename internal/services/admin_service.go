@@ -246,7 +246,9 @@ func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int
 
 	ledger := repositories.NewDriverLedgerRepository(s.db)
 	refType := "admin_deduct"
-	refID := "admin:dashboard"
+	// Ensure reference_id is unique per deduction to avoid UNIQUE constraint conflicts
+	// on (driver_id, reference_type, reference_id).
+	refID := fmt.Sprintf("admin:dashboard:%d", time.Now().UnixNano())
 	note := reason
 	if note == "" {
 		note = "Admin manual cash deduction"
