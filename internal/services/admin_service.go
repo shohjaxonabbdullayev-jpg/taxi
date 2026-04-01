@@ -338,7 +338,7 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT user_id, last_lat, last_lng, is_active, COALESCE(live_location_active, 0)
 		FROM drivers
-		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL AND is_active = 1 AND COALESCE(live_location_active, 0) = 1`)
+		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
