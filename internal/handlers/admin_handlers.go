@@ -42,6 +42,7 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 		g.GET("/map/ride-requests", h.ListRideRequestsForMap)
 		g.GET("/nearest-drivers", h.NearestDriversForRequest)
 		g.GET("/nearest-requests", h.NearestRequestsForDriver)
+		g.POST("/ride-requests/:request_id/offer", h.OfferRideRequest)
 		g.GET("/drivers/:id/ledger", h.ListDriverLedger)
 		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
@@ -96,6 +97,59 @@ func (h *AdminHandlers) NearestDriversForRequest(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, drivers)
+}
+
+type adminOfferRideBody struct {
+	DriverID    int64 `json:"driver_id"`
+	DriverIDAlt int64 `json:"driverId"`
+}
+
+// OfferRideRequest sends a dispatch offer to one driver (Telegram + request_notifications), same as auto-dispatch.
+// POST body: { "driver_id": <int> } (optional alias "driverId").
+func (h *AdminHandlers) OfferRideRequest(c *gin.Context) {
+	requestID := strings.TrimSpace(c.Param("request_id"))
+	if requestID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_id is required"})
+		return
+	}
+	if h.matchSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "offer unavailable"})
+		return
+	}
+	var body adminOfferRideBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	driverID := body.DriverID
+	if driverID == 0 {
+		driverID = body.DriverIDAlt
+	}
+	if driverID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "driver_id is required"})
+		return
+	}
+
+	err := h.matchSvc.AdminSendOfferToDriver(c.Request.Context(), requestID, driverID)
+	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrRideRequestNotOfferable):
+			c.JSON(http.StatusNotFound, gin.H{"error": "ride request not found or not pending"})
+		case errors.Is(err, services.ErrAdminDriverNotEligible):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "driver not eligible for offer"})
+		case errors.Is(err, services.ErrAdminOfferExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "offer already sent to this driver"})
+		case errors.Is(err, services.ErrAdminOfferNoTelegram):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telegram bot not configured"})
+		case errors.Is(err, services.ErrAdminOfferTelegramFail):
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to send telegram notification"})
+		default:
+			log.Printf("admin offer: request=%s driver=%d err=%v", requestID, driverID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send offer"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 type adminNearestRequest struct {

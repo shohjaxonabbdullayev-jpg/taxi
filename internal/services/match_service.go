@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -32,6 +33,15 @@ const (
 	// To prevent "output too large" issues, never log large slices verbatim.
 	logSliceMaxItems = 20
 	logMaxChars      = 180
+)
+
+// Sentinel errors for admin manual offers (POST .../ride-requests/:id/offer).
+var (
+	ErrRideRequestNotOfferable = errors.New("ride request not found or not pending")
+	ErrAdminDriverNotEligible  = errors.New("driver not eligible for this offer")
+	ErrAdminOfferExists        = errors.New("offer already sent to this driver")
+	ErrAdminOfferNoTelegram    = errors.New("driver bot unavailable for telegram delivery")
+	ErrAdminOfferTelegramFail  = errors.New("failed to deliver offer via telegram")
 )
 
 func truncateLog(s string, maxChars int) string {
@@ -654,4 +664,112 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 		})
 	}
 	return out, nil
+}
+
+// AdminSendOfferToDriver sends the same Telegram + request_notifications flow as automatic dispatch,
+// for one driver chosen from the admin map. Eligibility matches AdminNearestDispatchDrivers.
+func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID string, driverUserID int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("match service unavailable")
+	}
+	if driverUserID <= 0 {
+		return ErrAdminDriverNotEligible
+	}
+
+	var pickupLat, pickupLng float64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT pickup_lat, pickup_lng FROM ride_requests
+		WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')
+		  AND (assigned_driver_user_id IS NULL OR assigned_driver_user_id = 0)`,
+		requestID, domain.RequestStatusPending).Scan(&pickupLat, &pickupLng)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrRideRequestNotOfferable
+		}
+		return err
+	}
+
+	var dup int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM request_notifications WHERE request_id = ?1 AND driver_user_id = ?2`,
+		requestID, driverUserID).Scan(&dup)
+	if err == nil {
+		return ErrAdminOfferExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	locationFreshSinceStr := time.Now().Add(-time.Duration(driverLocationFreshnessSeconds) * time.Second).UTC().Format("2006-01-02 15:04:05")
+	balanceCond := ""
+	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
+		balanceCond = " AND d.balance > 0"
+	}
+	var telegramID int64
+	var lastLat, lastLng float64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT u.telegram_id, d.last_lat, d.last_lng
+		FROM drivers d JOIN users u ON u.id = d.user_id
+		WHERE d.user_id = ?3
+		  AND COALESCE(d.is_active, 0) = 1
+		  AND COALESCE(d.manual_offline, 0) = 0
+		  AND COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
+		  AND d.verification_status = 'approved'
+		  AND `+legal.SQLDriverDispatchLegalOK+`
+		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
+		  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
+		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
+		locationFreshSinceStr, locationFreshSinceStr, driverUserID).Scan(&telegramID, &lastLat, &lastLng)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAdminDriverNotEligible
+		}
+		return err
+	}
+
+	distKm := utils.HaversineMeters(pickupLat, pickupLng, lastLat, lastLng) / 1000
+	var riderPhone string
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, requestID).Scan(&riderPhone)
+	riderPhone = strings.TrimSpace(riderPhone)
+
+	text := formatOrderMessageToDriver(distKm, riderPhone)
+	if !s.isDriverSharingLiveLocation(ctx, driverUserID) {
+		text += liveLocationOrderHint
+	}
+
+	chatID, msgID := telegramID, 0
+	if s.bot != nil {
+		msg := tgbotapi.NewMessage(telegramID, text)
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
+			),
+		)
+		sentMsg, sendErr := s.bot.Send(msg)
+		if sendErr != nil {
+			log.Printf("admin_offer: telegram send driver=%d request=%s err=%v", driverUserID, requestID, truncateLog(sendErr.Error(), logMaxChars))
+			if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
+				return fmt.Errorf("%w: %v", ErrAdminOfferTelegramFail, sendErr)
+			}
+			chatID = 0
+			msgID = 0
+		} else {
+			msgID = sentMsg.MessageID
+		}
+	} else {
+		if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
+			return ErrAdminOfferNoTelegram
+		}
+		chatID = 0
+		msgID = 0
+	}
+
+	if err := s.insertOfferNotification(ctx, requestID, driverUserID, chatID, msgID); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrAdminOfferExists
+		}
+		return err
+	}
+	return nil
 }
