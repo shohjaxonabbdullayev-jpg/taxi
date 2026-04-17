@@ -311,6 +311,10 @@ If logs mention missing **`document_type`** or broken legal tables, run migratio
 
 Admin routes (drivers, riders, payments, verification) are registered from **`handlers.NewAdminHandlers`**. Legal admin endpoints are under **`/admin/legal/...`** and mirrored paths (see **`RegisterAdminLegalRoutes`**). **Source of truth** for compliance is **`legal_acceptances`** vs **active** **`legal_documents`**.
 
+**Live Map ride requests (rider phone):** **`GET /map/ride-requests`** is mounted under each admin prefix (**`/admin`**, **`/api/admin`**, **`/api/v1/admin`**, **`/v1/admin`**). The JSON array elements include **`id`**, **`pickup_lat`**, **`pickup_lng`**, **`status`**, and optionally **`rider_phone`** (string): full value from **`users.phone`** for the rider linked by **`ride_requests.rider_user_id`**. The field is **omitted** when the DB value is null or blank so the UI can treat “missing” as N/A. This is an unauthenticated admin HTTP surface (same as other admin list routes); do not expose this URL publicly without network controls.
+
+**Manual check (Live Map details card):** Ensure the rider has a non-empty **`users.phone`**, open a pending request on the map, reload ride requests — the details JSON for that request should contain **`rider_phone`** and the card should show it (not N/A). Covered in **`TestListActiveRideRequestsForMap_IncludesRiderPhone`**.
+
 ### Driver bot UX (live location)
 
 - **Online** for matching = **Telegram live location** freshness (+ balance + legal + approval).
@@ -355,8 +359,12 @@ CI workflows are optional; this repo may or may not define **`.github/workflows/
 ## License / project
 
 Internal YettiQanot / taxi MVP codebase; adjust licensing as your organization requires.
-#   t a x i  
- #   t a x i  
- #   t a x i  
- #   t a x i  
+#   t a x i 
+ 
+ #   t a x i 
+ 
+ #   t a x i 
+ 
+ #   t a x i 
+ 
  

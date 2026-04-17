@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"taxi-mvp/internal/accounting"
@@ -16,13 +17,13 @@ import (
 
 // DashboardSummary is returned by the admin dashboard endpoint.
 type DashboardSummary struct {
-	TotalDrivers          int64 `json:"total_drivers"`
-	ActiveDrivers         int64 `json:"active_drivers"`
-	InactiveDrivers       int64 `json:"inactive_drivers"`
-	TotalDriverBalances   int64 `json:"total_driver_balances"`   // promo + cash (compat)
-	TotalPromoBalances    int64 `json:"total_promo_balances"`    // platform promotional credit only
-	TotalCashBalances     int64 `json:"total_cash_balances"`     // real-wallet leg
-	TodaysTrips           int64 `json:"todays_trips"`
+	TotalDrivers        int64 `json:"total_drivers"`
+	ActiveDrivers       int64 `json:"active_drivers"`
+	InactiveDrivers     int64 `json:"inactive_drivers"`
+	TotalDriverBalances int64 `json:"total_driver_balances"` // promo + cash (compat)
+	TotalPromoBalances  int64 `json:"total_promo_balances"`  // platform promotional credit only
+	TotalCashBalances   int64 `json:"total_cash_balances"`   // real-wallet leg
+	TodaysTrips         int64 `json:"todays_trips"`
 }
 
 // AdminService coordinates admin-facing driver, payment, and dashboard operations.
@@ -324,11 +325,13 @@ type AdminMapDriver struct {
 }
 
 // AdminMapRideRequest is a minimal view for active ride requests on the admin map.
+// RiderPhone is the rider's users.phone (admin dashboard only); omitted when null or blank so clients show N/A only when absent.
 type AdminMapRideRequest struct {
 	ID         string  `json:"id"`
 	PickupLat  float64 `json:"pickup_lat"`
 	PickupLng  float64 `json:"pickup_lng"`
 	Status     string  `json:"status"`
+	RiderPhone *string `json:"rider_phone,omitempty"`
 }
 
 // ListActiveDriversForMap returns drivers with valid coordinates for the admin map.
@@ -362,10 +365,11 @@ func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]Admi
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, pickup_lat, pickup_lng, status
-		FROM ride_requests
-		WHERE pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
-		  AND status = ?1`,
+		SELECT r.id, r.pickup_lat, r.pickup_lng, r.status, u.phone
+		FROM ride_requests r
+		LEFT JOIN users u ON u.id = r.rider_user_id
+		WHERE r.pickup_lat IS NOT NULL AND r.pickup_lng IS NOT NULL
+		  AND r.status = ?1`,
 		domain.RequestStatusPending)
 	if err != nil {
 		return nil, err
@@ -374,8 +378,14 @@ func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]Admi
 	var out []AdminMapRideRequest
 	for rows.Next() {
 		var r AdminMapRideRequest
-		if err := rows.Scan(&r.ID, &r.PickupLat, &r.PickupLng, &r.Status); err != nil {
+		var phone sql.NullString
+		if err := rows.Scan(&r.ID, &r.PickupLat, &r.PickupLng, &r.Status, &phone); err != nil {
 			return nil, err
+		}
+		if phone.Valid {
+			if p := strings.TrimSpace(phone.String); p != "" {
+				r.RiderPhone = &p
+			}
 		}
 		out = append(out, r)
 	}
