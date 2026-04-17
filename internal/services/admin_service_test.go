@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Regression: admin Live Map loads GET .../map/ride-requests; details card should show rider phone when users.phone is set.
+// Regression: GET .../map/ride-requests includes top-level user_id, telegram_id, rider_phone (string, may be ""), rider_name.
 func TestListActiveRideRequestsForMap_IncludesRiderPhone(t *testing.T) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:admin_map_rr?mode=memory&cache=shared")
@@ -30,7 +30,9 @@ func TestListActiveRideRequestsForMap_IncludesRiderPhone(t *testing.T) {
 	}
 	exec(`CREATE TABLE users (
 		id INTEGER PRIMARY KEY,
-		phone TEXT
+		telegram_id INTEGER NOT NULL DEFAULT 0,
+		phone TEXT,
+		name TEXT
 	);`)
 	exec(`CREATE TABLE ride_requests (
 		id TEXT PRIMARY KEY,
@@ -42,10 +44,10 @@ func TestListActiveRideRequestsForMap_IncludesRiderPhone(t *testing.T) {
 	);`)
 
 	expires := time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
-	exec(`INSERT INTO users (id, phone) VALUES (1, '  +998901112233  ');`)
+	exec(`INSERT INTO users (id, telegram_id, phone, name) VALUES (1, 6891986798, '  +998901112233  ', 'Ali');`)
 	exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, status, expires_at)
 		VALUES ('req-with-phone', 1, 41.3, 69.2, '` + domain.RequestStatusPending + `', '` + expires + `');`)
-	exec(`INSERT INTO users (id, phone) VALUES (2, NULL);`)
+	exec(`INSERT INTO users (id, telegram_id, phone, name) VALUES (2, 7000000001, NULL, NULL);`)
 	exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, status, expires_at)
 		VALUES ('req-no-phone', 2, 41.3, 69.2, '` + domain.RequestStatusPending + `', '` + expires + `');`)
 
@@ -71,25 +73,28 @@ func TestListActiveRideRequestsForMap_IncludesRiderPhone(t *testing.T) {
 	if withPhone == nil || withoutPhone == nil {
 		t.Fatalf("missing row: %#v", out)
 	}
-	if withPhone.RiderPhone == nil || *withPhone.RiderPhone != "+998901112233" {
-		t.Fatalf("rider_phone = %v, want +998901112233", withPhone.RiderPhone)
+	if withPhone.UserID != 1 || withPhone.TelegramID != 6891986798 || withPhone.RiderPhone != "+998901112233" || withPhone.RiderName != "Ali" {
+		t.Fatalf("withPhone = %#v", withPhone)
 	}
-	if withoutPhone.RiderPhone != nil {
-		t.Fatalf("expected nil rider_phone for null DB phone, got %q", *withoutPhone.RiderPhone)
+	if withoutPhone.UserID != 2 || withoutPhone.TelegramID != 7000000001 || withoutPhone.RiderPhone != "" || withoutPhone.RiderName != "" {
+		t.Fatalf("withoutPhone = %#v", withoutPhone)
 	}
 
 	raw, err := json.Marshal(withPhone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"rider_phone"`) {
-		t.Fatalf("JSON missing rider_phone: %s", raw)
+	s := string(raw)
+	for _, key := range []string{`"user_id"`, `"telegram_id"`, `"rider_phone"`, `"rider_name"`} {
+		if !strings.Contains(s, key) {
+			t.Fatalf("JSON missing %s: %s", key, raw)
+		}
 	}
 	rawNo, err := json.Marshal(withoutPhone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(rawNo), `"rider_phone"`) {
-		t.Fatalf("JSON should omit rider_phone when absent: %s", rawNo)
+	if !strings.Contains(string(rawNo), `"rider_phone":""`) {
+		t.Fatalf("JSON should include empty rider_phone: %s", rawNo)
 	}
 }

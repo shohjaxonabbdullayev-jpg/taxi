@@ -311,9 +311,20 @@ If logs mention missing **`document_type`** or broken legal tables, run migratio
 
 Admin routes (drivers, riders, payments, verification) are registered from **`handlers.NewAdminHandlers`**. Legal admin endpoints are under **`/admin/legal/...`** and mirrored paths (see **`RegisterAdminLegalRoutes`**). **Source of truth** for compliance is **`legal_acceptances`** vs **active** **`legal_documents`**.
 
-**Live Map ride requests (rider phone):** **`GET /map/ride-requests`** is mounted under each admin prefix (**`/admin`**, **`/api/admin`**, **`/api/v1/admin`**, **`/v1/admin`**). The JSON array elements include **`id`**, **`pickup_lat`**, **`pickup_lng`**, **`status`**, and optionally **`rider_phone`** (string): full value from **`users.phone`** for the rider linked by **`ride_requests.rider_user_id`**. The field is **omitted** when the DB value is null or blank so the UI can treat “missing” as N/A. This is an unauthenticated admin HTTP surface (same as other admin list routes); do not expose this URL publicly without network controls.
+**Live Map ride requests:** **`GET /map/ride-requests`** (also **`/api/v1/admin/map/ride-requests`**, etc.) returns a JSON array of pending requests. Each object uses **snake_case** and always includes rider join fields and a usable phone string at the top level:
 
-**Manual check (Live Map details card):** Ensure the rider has a non-empty **`users.phone`**, open a pending request on the map, reload ride requests — the details JSON for that request should contain **`rider_phone`** and the card should show it (not N/A). Covered in **`TestListActiveRideRequestsForMap_IncludesRiderPhone`**.
+| Field | Meaning |
+|-------|---------|
+| **`id`** | Ride request UUID |
+| **`user_id`** | Rider **`users.id`** (`0` if join missing) |
+| **`telegram_id`** | Rider **`users.telegram_id`** (`0` if null) |
+| **`rider_phone`** | Trimmed **`users.phone`** (E.164 or local digits); **`""`** if null or blank |
+| **`rider_name`** | Trimmed **`users.name`**; **`""`** if null |
+| **`pickup_lat`**, **`pickup_lng`**, **`status`** | Unchanged |
+
+Example row: `{"id":"<uuid>","user_id":123,"telegram_id":6891986798,"rider_phone":"+998901234567","rider_name":"Ali","pickup_lat":41.3,"pickup_lng":69.2,"status":"PENDING"}`. This admin list route is unauthenticated; restrict at the network edge.
+
+**Manual check:** Rider with **`users.phone`** set → response **`rider_phone`** non-empty; rider without phone → **`rider_phone":""`**. See **`TestListActiveRideRequestsForMap_IncludesRiderPhone`**.
 
 ### Driver bot UX (live location)
 

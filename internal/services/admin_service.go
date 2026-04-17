@@ -324,14 +324,17 @@ type AdminMapDriver struct {
 	LastLocationAt     string  `json:"last_location_at,omitempty"`
 }
 
-// AdminMapRideRequest is a minimal view for active ride requests on the admin map.
-// RiderPhone is the rider's users.phone (admin dashboard only); omitted when null or blank so clients show N/A only when absent.
+// AdminMapRideRequest is the admin map view of a pending ride request (GET .../map/ride-requests).
+// Rider join keys and rider_phone are always present at top level; rider_phone is "" when users.phone is null or blank.
 type AdminMapRideRequest struct {
 	ID         string  `json:"id"`
+	UserID     int64   `json:"user_id"`
+	TelegramID int64   `json:"telegram_id"`
+	RiderPhone string  `json:"rider_phone"`
+	RiderName  string  `json:"rider_name"`
 	PickupLat  float64 `json:"pickup_lat"`
 	PickupLng  float64 `json:"pickup_lng"`
 	Status     string  `json:"status"`
-	RiderPhone *string `json:"rider_phone,omitempty"`
 }
 
 // ListActiveDriversForMap returns drivers with valid coordinates for the admin map.
@@ -365,7 +368,8 @@ func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]Admi
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT r.id, r.pickup_lat, r.pickup_lng, r.status, u.phone
+		SELECT r.id, r.pickup_lat, r.pickup_lng, r.status,
+			u.id, u.telegram_id, u.phone, u.name
 		FROM ride_requests r
 		LEFT JOIN users u ON u.id = r.rider_user_id
 		WHERE r.pickup_lat IS NOT NULL AND r.pickup_lng IS NOT NULL
@@ -378,14 +382,24 @@ func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]Admi
 	var out []AdminMapRideRequest
 	for rows.Next() {
 		var r AdminMapRideRequest
-		var phone sql.NullString
-		if err := rows.Scan(&r.ID, &r.PickupLat, &r.PickupLng, &r.Status, &phone); err != nil {
+		var uid sql.NullInt64
+		var tid sql.NullInt64
+		var phone, riderName sql.NullString
+		if err := rows.Scan(&r.ID, &r.PickupLat, &r.PickupLng, &r.Status,
+			&uid, &tid, &phone, &riderName); err != nil {
 			return nil, err
 		}
+		if uid.Valid {
+			r.UserID = uid.Int64
+		}
+		if tid.Valid {
+			r.TelegramID = tid.Int64
+		}
 		if phone.Valid {
-			if p := strings.TrimSpace(phone.String); p != "" {
-				r.RiderPhone = &p
-			}
+			r.RiderPhone = strings.TrimSpace(phone.String)
+		}
+		if riderName.Valid {
+			r.RiderName = strings.TrimSpace(riderName.String)
 		}
 		out = append(out, r)
 	}
