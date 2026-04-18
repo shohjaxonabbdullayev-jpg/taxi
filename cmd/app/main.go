@@ -17,11 +17,12 @@ import (
 	driverbot "taxi-mvp/internal/bot/driver"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
-	"taxi-mvp/internal/db/legalrepair"
-	"taxi-mvp/internal/db/legalfingerrepair"
+	"taxi-mvp/internal/db/driverlogincodes"
 	"taxi-mvp/internal/db/ledgerrepair"
-	"taxi-mvp/internal/server"
+	"taxi-mvp/internal/db/legalfingerrepair"
+	"taxi-mvp/internal/db/legalrepair"
 	"taxi-mvp/internal/repositories"
+	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/ws"
 )
@@ -45,6 +46,9 @@ func main() {
 	}
 	if err := legalfingerrepair.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("drivers legal fingerprint column repair: %v", err)
+	}
+	if err := driverlogincodes.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("driver login codes schema: %v", err)
 	}
 	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
 		log.Printf("accounting: signup promo backfill: %v", err)

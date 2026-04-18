@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -61,11 +62,11 @@ func findApprovedDriverUserByPhoneDigits(ctx context.Context, db *sql.DB, digits
 		WHERE u.role = 'driver'
 		  AND d.verification_status = 'approved'
 		  AND (
-			replace(replace(replace(coalesce(u.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
-			OR replace(replace(replace(coalesce(d.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
+			replace(replace(replace(coalesce(u.phone, ''), '+', ''), ' ', ''), '-', '') = ?
+			OR replace(replace(replace(coalesce(d.phone, ''), '+', ''), ' ', ''), '-', '') = ?
 		  )
 		LIMIT 1`,
-		digits).Scan(&userID, &telegramID)
+		digits, digits).Scan(&userID, &telegramID)
 	return userID, telegramID, err
 }
 
@@ -98,6 +99,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot *tgbotapi.BotAPI) gin.HandlerFu
 			return
 		}
 		if err != nil {
+			log.Printf("driver_auth: request-code lookup error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 			return
 		}
@@ -113,7 +115,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot *tgbotapi.BotAPI) gin.HandlerFu
 		var recent int
 		if err := db.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM driver_login_codes
-			WHERE user_id = ?1 AND created_at > datetime('now', '-30 seconds')`,
+			WHERE user_id = ? AND created_at > datetime('now', '-30 seconds')`,
 			userID).Scan(&recent); err == nil && recent > 0 {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": errDriverAuthRateLimited})
 			return
@@ -125,13 +127,14 @@ func DriverAuthRequestCode(db *sql.DB, driverBot *tgbotapi.BotAPI) gin.HandlerFu
 			return
 		}
 
-		_, _ = db.ExecContext(ctx, `UPDATE driver_login_codes SET used = 1 WHERE user_id = ?1 AND used = 0`, userID)
+		_, _ = db.ExecContext(ctx, `UPDATE driver_login_codes SET used = 1 WHERE user_id = ? AND used = 0`, userID)
 
 		res, err := db.ExecContext(ctx, `
 			INSERT INTO driver_login_codes (user_id, code, expires_at)
-			VALUES (?1, ?2, datetime('now', '+3 minutes'))`,
+			VALUES (?, ?, datetime('now', '+3 minutes'))`,
 			userID, code)
 		if err != nil {
+			log.Printf("driver_auth: request-code storage error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "storage failed"})
 			return
 		}
@@ -139,7 +142,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot *tgbotapi.BotAPI) gin.HandlerFu
 
 		msg := tgbotapi.NewMessage(telegramID, fmt.Sprintf("Your YettiQanot login code: %s (expires in 3 minutes)", code))
 		if _, err := driverBot.Send(msg); err != nil {
-			_, _ = db.ExecContext(ctx, `DELETE FROM driver_login_codes WHERE id = ?1`, id)
+			_, _ = db.ExecContext(ctx, `DELETE FROM driver_login_codes WHERE id = ?`, id)
 			c.JSON(http.StatusBadGateway, gin.H{"error": errDriverAuthTelegramFail})
 			return
 		}
@@ -170,6 +173,7 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
+			log.Printf("driver_auth: verify-code lookup error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 			return
 		}
@@ -178,7 +182,7 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 		var stored string
 		err = db.QueryRowContext(ctx, `
 			SELECT id, code FROM driver_login_codes
-			WHERE user_id = ?1 AND used = 0 AND expires_at > datetime('now')
+			WHERE user_id = ? AND used = 0 AND expires_at > datetime('now')
 			ORDER BY id DESC LIMIT 1`,
 			userID).Scan(&rowID, &stored)
 		if err == sql.ErrNoRows {
@@ -186,6 +190,7 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
+			log.Printf("driver_auth: verify-code code row error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 			return
 		}
@@ -195,7 +200,7 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		_, err = db.ExecContext(ctx, `UPDATE driver_login_codes SET used = 1 WHERE id = ?1`, rowID)
+		_, err = db.ExecContext(ctx, `UPDATE driver_login_codes SET used = 1 WHERE id = ?`, rowID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 			return

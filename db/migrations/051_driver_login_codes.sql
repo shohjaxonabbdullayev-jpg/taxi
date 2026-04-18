@@ -1,7 +1,7 @@
 -- +goose Up
 -- OTP for native driver login via phone; codes sent by existing Telegram driver bot (HTTP only).
 
-CREATE TABLE driver_login_codes (
+CREATE TABLE IF NOT EXISTS driver_login_codes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   code TEXT NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE driver_login_codes (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_driver_login_codes_user_created ON driver_login_codes(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_driver_login_codes_user_created ON driver_login_codes(user_id, created_at);
 
 -- +goose Down
 DROP INDEX IF EXISTS idx_driver_login_codes_user_created;
