@@ -138,10 +138,13 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		}
 	}
 
+	// Remove the offer message from every notified driver (including the accepter). Native app accept
+	// uses the same TryAssign as the bot; without deleting the accepter's row, the Telegram inline
+	// "Accept" stayed visible even after the trip was taken in the app.
 	notifRows, err := s.db.QueryContext(ctx, `
 		SELECT chat_id, message_id FROM request_notifications
-		WHERE request_id = ?1 AND driver_user_id != ?2`,
-		requestID, driverUserID)
+		WHERE request_id = ?1 AND message_id != 0`,
+		requestID)
 	if err != nil {
 		return true, tripID, nil
 	}
