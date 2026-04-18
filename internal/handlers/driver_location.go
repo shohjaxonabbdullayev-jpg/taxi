@@ -17,7 +17,9 @@ import (
 	"taxi-mvp/internal/ws"
 )
 
-// DriverLocationAccuracyMaxMeters is the maximum accuracy (meters) to accept; above this location updates are ignored.
+// DriverLocationAccuracyMaxMeters caps quality for trip polyline AddPoint + live WS updates.
+// Dispatch / online (last_seen_at, last_live_location_at, grid_id) still updates when accuracy is worse,
+// so native apps are not excluded from matching just because the device reported e.g. 65m accuracy.
 const DriverLocationAccuracyMaxMeters = 50
 
 // IgnoreReasonAccuracy returns the ignore reason when accuracy is too low, or empty string when acceptable.
@@ -32,7 +34,7 @@ func IgnoreReasonAccuracy(accuracy float64) string {
 type DriverLocationRequest struct {
 	Lat       float64 `json:"lat" binding:"required"`
 	Lng       float64 `json:"lng" binding:"required"`
-	Accuracy  float64 `json:"accuracy"`  // meters; optional, ignored if > 50
+	Accuracy  float64 `json:"accuracy"`  // meters; optional; >50 skips trip AddPoint only, not dispatch freshness
 	Timestamp *int64  `json:"timestamp"` // Unix seconds (GPS fix); optional; server uses wall clock for last_seen_at / last_live_location_at
 }
 
@@ -62,11 +64,6 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 			driverID).Scan(&activeTrip)
 		if activeTrip == "" && !legalSvc.DriverHasActiveLegal(ctx, driverID) {
 			c.JSON(http.StatusForbidden, gin.H{"error": legal.ErrCodeRequired})
-			return
-		}
-		if reason := IgnoreReasonAccuracy(req.Accuracy); reason != "" {
-			logger.DriverLocation("", driverID, "ignored", reason)
-			c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": reason})
 			return
 		}
 		// Always use server wall clock for last_seen_at / last_live_location_at. Client-reported
@@ -100,36 +97,41 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 			err := db.QueryRowContext(ctx, `SELECT id FROM trips WHERE driver_user_id = ?1 AND status = ?2 LIMIT 1`,
 				driverID, domain.TripStatusStarted).Scan(&tripID)
 			if err == nil && tripID != "" {
-				accepted, reason, addErr := tripSvc.AddPoint(ctx, tripID, driverID, req.Lat, req.Lng, time.Now())
-				if addErr != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add point"})
-					return
-				}
-				if !accepted && reason != "" {
-					ignoredReason = reason
-				}
-				if accepted {
-					logger.DriverLocation(tripID, driverID, "accepted", "")
-					// Only broadcast if trip is still STARTED; include live distance_km and fare for frontend
-					var status string
-					var distanceM int64
-					_ = db.QueryRowContext(ctx, `SELECT status, distance_m FROM trips WHERE id = ?1`, tripID).Scan(&status, &distanceM)
-					if hub != nil && status == domain.TripStatusStarted {
-						payload := map[string]interface{}{"lat": req.Lat, "lng": req.Lng}
-						distanceKm := float64(distanceM) / 1000
-						payload["distance_km"] = distanceKm
-						if fareSvc != nil {
-							if fare, err := fareSvc.CalculateFare(ctx, distanceKm); err == nil {
-								payload["fare"] = fare
+				if accReason := IgnoreReasonAccuracy(req.Accuracy); accReason != "" {
+					logger.DriverLocation(tripID, driverID, "ignored", accReason+" (trip point only)")
+					ignoredReason = accReason
+				} else {
+					accepted, reason, addErr := tripSvc.AddPoint(ctx, tripID, driverID, req.Lat, req.Lng, time.Now())
+					if addErr != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add point"})
+						return
+					}
+					if !accepted && reason != "" {
+						ignoredReason = reason
+					}
+					if accepted {
+						logger.DriverLocation(tripID, driverID, "accepted", "")
+						// Only broadcast if trip is still STARTED; include live distance_km and fare for frontend
+						var status string
+						var distanceM int64
+						_ = db.QueryRowContext(ctx, `SELECT status, distance_m FROM trips WHERE id = ?1`, tripID).Scan(&status, &distanceM)
+						if hub != nil && status == domain.TripStatusStarted {
+							payload := map[string]interface{}{"lat": req.Lat, "lng": req.Lng}
+							distanceKm := float64(distanceM) / 1000
+							payload["distance_km"] = distanceKm
+							if fareSvc != nil {
+								if fare, err := fareSvc.CalculateFare(ctx, distanceKm); err == nil {
+									payload["fare"] = fare
+								}
+							} else if cfg != nil {
+								payload["fare"] = utils.CalculateFareRounded(float64(cfg.StartingFee), float64(cfg.PricePerKm), distanceKm)
 							}
-						} else if cfg != nil {
-							payload["fare"] = utils.CalculateFareRounded(float64(cfg.StartingFee), float64(cfg.PricePerKm), distanceKm)
+							hub.BroadcastToTrip(tripID, ws.Event{
+								Type:       "driver_location_update",
+								TripStatus: domain.TripStatusStarted,
+								Payload:    payload,
+							})
 						}
-						hub.BroadcastToTrip(tripID, ws.Event{
-							Type:       "driver_location_update",
-							TripStatus: domain.TripStatusStarted,
-							Payload:    payload,
-						})
 					}
 				}
 			}

@@ -103,10 +103,10 @@ curl -sS -X POST -H "Content-Type: application/json" \
 | Field | Required | Notes |
 |-------|----------|--------|
 | **`lat`**, **`lng`** | yes | Coordinates. |
-| **`accuracy`** | no | Meters; updates with accuracy **> 50** m are ignored (**200** with `"ignored": "accuracy too low"`). |
+| **`accuracy`** | no | Meters; if **> 50**, trip **`AddPoint`** and live **`driver_location_update`** WS are skipped (**200** may include `"ignored": "accuracy too low"` while **STARTED**). **Dispatch / online** columns (`last_seen_at`, `last_live_location_at`, `live_location_active`, `grid_id`, coordinates) still update so poor GPS accuracy does not drop the driver from matching. |
 | **`timestamp`** | no | Unix **seconds** (GPS fix time), optional; accepted for clients but **not** used to set `last_seen_at` / `last_live_location_at` (server uses UTC wall clock so GPS lag does not skip updates). |
 
-**200:** `{ "ok": true }`, or `{ "ok": true, "ignored": "<reason>" }` when ignored (accuracy, stale, or trip point not recorded).
+**200:** `{ "ok": true }`, or `{ "ok": true, "ignored": "<reason>" }` for trip-only issues (e.g. accuracy during **STARTED**, movement too small, etc.).
 
 ---
 
