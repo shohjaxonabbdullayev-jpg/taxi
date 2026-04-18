@@ -33,7 +33,7 @@ type DriverLocationRequest struct {
 	Lat       float64 `json:"lat" binding:"required"`
 	Lng       float64 `json:"lng" binding:"required"`
 	Accuracy  float64 `json:"accuracy"`  // meters; optional, ignored if > 50
-	Timestamp *int64  `json:"timestamp"` // Unix seconds when fix was taken; optional, else server time
+	Timestamp *int64  `json:"timestamp"` // Unix seconds (GPS fix); optional; server uses wall clock for last_seen_at / last_live_location_at
 }
 
 // DriverLocation updates driver's last position and optionally adds a point to active trip.
@@ -69,40 +69,30 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 			c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": reason})
 			return
 		}
-		var incomingTime time.Time
-		if req.Timestamp != nil && *req.Timestamp > 0 {
-			incomingTime = time.Unix(*req.Timestamp, 0).UTC()
+		// Always use server wall clock for last_seen_at / last_live_location_at. Client-reported
+		// timestamp (GPS fix time) often lags by seconds vs the previous DB row; comparing it to
+		// last_seen_at caused the whole UPDATE to be skipped so native apps never refreshed
+		// live_location_active / last_live_location_at and were excluded from dispatch.
+		// Optional req.timestamp remains accepted for forward compatibility but does not gate writes.
+		nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
+		gridID := utils.GridID(req.Lat, req.Lng)
+		if cfg != nil && cfg.DispatchDebug {
+			logger.DriverLocation("", driverID, "grid_update", "grid_id="+gridID)
+		}
+		// nil cfg (e.g. tests): treat like default-on HTTP live so position rows still update.
+		httpLive := cfg == nil || cfg.EnableDriverHTTPLiveLocation
+		if httpLive {
+			_, _ = db.ExecContext(ctx, `
+				UPDATE drivers SET last_lat = ?1, last_lng = ?2, last_seen_at = ?3, grid_id = ?4,
+					last_live_location_at = ?3, live_location_active = 1 WHERE user_id = ?5`,
+				req.Lat, req.Lng, nowStr, gridID, driverID)
+			if matchSvc != nil {
+				matchSvc.PulseDriverOnlineFromHTTP(ctx, driverID)
+			}
 		} else {
-			incomingTime = time.Now().UTC()
-		}
-		var lastSeenAt sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT last_seen_at FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastSeenAt)
-		stale := false
-		if lastSeenAt.Valid && lastSeenAt.String != "" {
-			if parsed, err := time.Parse("2006-01-02 15:04:05", lastSeenAt.String); err == nil && !incomingTime.After(parsed) {
-				logger.DriverLocation("", driverID, "ignored", "stale")
-				stale = true
-			}
-		}
-		if !stale {
-			nowStr := incomingTime.Format("2006-01-02 15:04:05")
-			gridID := utils.GridID(req.Lat, req.Lng)
-			if cfg != nil && cfg.DispatchDebug {
-				logger.DriverLocation("", driverID, "grid_update", "grid_id="+gridID)
-			}
-			if cfg != nil && cfg.EnableDriverHTTPLiveLocation {
-				_, _ = db.ExecContext(ctx, `
-					UPDATE drivers SET last_lat = ?1, last_lng = ?2, last_seen_at = ?3, grid_id = ?4,
-						last_live_location_at = ?3, live_location_active = 1 WHERE user_id = ?5`,
-					req.Lat, req.Lng, nowStr, gridID, driverID)
-				if matchSvc != nil {
-					matchSvc.PulseDriverOnlineFromHTTP(ctx, driverID)
-				}
-			} else {
-				_, _ = db.ExecContext(ctx, `
-					UPDATE drivers SET last_lat = ?1, last_lng = ?2, last_seen_at = ?3, grid_id = ?4 WHERE user_id = ?5`,
-					req.Lat, req.Lng, nowStr, gridID, driverID)
-			}
+			_, _ = db.ExecContext(ctx, `
+				UPDATE drivers SET last_lat = ?1, last_lng = ?2, last_seen_at = ?3, grid_id = ?4 WHERE user_id = ?5`,
+				req.Lat, req.Lng, nowStr, gridID, driverID)
 		}
 		var tripID string
 		var ignoredReason string

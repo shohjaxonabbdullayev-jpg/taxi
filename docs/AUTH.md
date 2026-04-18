@@ -79,5 +79,5 @@ The backend sets the driver in the auth context so trip start/location/finish/ca
 **Driver location**
 
 1. `POST /driver/location` with header `X-Telegram-Init-Data` and/or **`X-Driver-Id`** (same as other driver routes) and body `{ "lat": 41.2, "lng": 69.3 }`.
-2. Optional: **`"timestamp": 1730000000`** (Unix **seconds** as a JSON number) for fix time; if omitted, server time is used.
+2. Optional: **`"timestamp": 1730000000`** (Unix **seconds**, GPS fix time). The server stores **`last_seen_at`** / **`last_live_location_at`** using **UTC wall clock** so a slightly old GPS timestamp cannot block updates.
 3. Middleware sets driver in context; handler uses `u.UserID` for DB update and AddPoint.

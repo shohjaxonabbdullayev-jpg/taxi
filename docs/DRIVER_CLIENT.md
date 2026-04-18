@@ -104,7 +104,7 @@ curl -sS -X POST -H "Content-Type: application/json" \
 |-------|----------|--------|
 | **`lat`**, **`lng`** | yes | Coordinates. |
 | **`accuracy`** | no | Meters; updates with accuracy **> 50** m are ignored (**200** with `"ignored": "accuracy too low"`). |
-| **`timestamp`** | no | Unix **seconds** for fix time; optional staleness checks against `last_seen_at`. |
+| **`timestamp`** | no | Unix **seconds** (GPS fix time), optional; accepted for clients but **not** used to set `last_seen_at` / `last_live_location_at` (server uses UTC wall clock so GPS lag does not skip updates). |
 
 **200:** `{ "ok": true }`, or `{ "ok": true, "ignored": "<reason>" }` when ignored (accuracy, stale, or trip point not recorded).
 
