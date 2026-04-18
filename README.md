@@ -143,6 +143,7 @@ Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initD
 |--------|------|-------------|
 | `GET` | `/trip/:id` | Trip info (`status` may be **`WAITING`**, **`ARRIVED`**, **`STARTED`**, …) |
 | `POST` | `/driver/location` | Driver location ping. By default also refreshes live-location columns for dispatch (see **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`**; **`docs/AUTH.md`**) |
+| `POST` | `/driver/offline` | Native app **OFFLINE** toggle: clears **`is_active`** / **`live_location_active`** / **`last_live_location_at`** (same idea as Telegram live end). Stopping location pings alone does not. |
 | `POST` | `/trip/arrived` | **`WAITING` → `ARRIVED`**: server checks pickup distance + fresh Telegram live location (same rules as starting from `WAITING`). Optional explicit “at pickup” step. Body: `{ "trip_id" }`. |
 | `POST` | `/trip/start` | **`WAITING` or `ARRIVED` → `STARTED`**. From **`WAITING`**, server enforces near-pickup + live location (do not rely on Mini App alone). From **`ARRIVED`**, proximity is **not** re-checked. Distance/fare accumulation still only after **`STARTED`**. On failure: e.g. too early → **400** with Uzbek message *“Mijozga hali yetib bormagansiz…”* |
 | `POST` | `/trip/finish` | Finish trip: **trip → `FINISHED`**, first-3 promo, referral check, and **commission** run in **one DB transaction**; if any of those steps fails, the transaction rolls back (trip stays non-**`FINISHED`**). **Telegram** notifications run **after** a successful commit. |

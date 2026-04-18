@@ -110,6 +110,24 @@ curl -sS -X POST -H "Content-Type: application/json" \
 
 ---
 
+## `POST /driver/offline`
+
+**Auth:** Driver.
+
+**Body:** none required (empty JSON `{}` is fine).
+
+**Purpose:** Clears the same dispatch flags as **Telegram live location end** (`is_active = 0`, `live_location_active = 0`, `last_live_location_at = NULL`, `manual_offline = 0`). Native/Flutter clients **must** call this when the user toggles **OFFLINE**; otherwise stopping `POST /driver/location` alone leaves the driver “online + live” in admin tools until freshness expires.
+
+**200:** `{ "ok": true }`
+
+**Example**
+
+```bash
+curl -sS -X POST -H "X-Driver-Id: YOUR_ID" "$BASE/driver/offline"
+```
+
+---
+
 ## Trip lifecycle (driver)
 
 All use **`trip_id`** in the JSON body (**no alternate keys** in the handler structs).

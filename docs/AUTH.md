@@ -11,6 +11,7 @@
 | **internal/auth/driver_x_header.go** | `ResolveDriverUserForXDriverID` — single resolver for HTTP + WS: tries internal **`users.id`** then **`users.telegram_id`**, requires **`drivers.verification_status = approved`**. `TryDriverIDHeader(db, opts)` runs first on driver routes; optional `DRIVER_AUTH_DEBUG` logs only booleans (never the header value). |
 | **internal/handlers/trip.go** | Trip handlers take `db`; get `User` from context; use `auth.AuthorizeTripAccess`; call services with `u.UserID` (no driver_id/rider_id from body). Request bodies: only `trip_id`. |
 | **internal/handlers/driver_location.go** | Get driver from context; body `lat`, `lng`, optional `accuracy` (>50m skips trip **AddPoint** only, not dispatch freshness), optional **`timestamp`** (Unix **seconds**; optional). |
+| **internal/handlers/driver_offline.go** | `POST /driver/offline` — clears **`is_active`** / **`live_location_active`** / **`last_live_location_at`** (Telegram live end parity); native **OFFLINE** toggle. |
 | **internal/ws/handler.go** | `ServeWsWithAuth(hub, db, driverToken, riderToken, enableDriverIDHeader, w, r)` — before upgrade: initData (driver or rider token) **or**, when `enableDriverIDHeader` and initData absent, `X-Driver-Id` for assigned driver; then `AuthorizeTripAccess`; 401/403 on failure; upgrade. |
 | **internal/server/server.go** | Apply `tryDriverID` then `driverAuth` on driver routes; `riderAuth` on rider cancel; GET /ws → `ServeWsWithAuth`. CORS allows `Authorization`, `X-Telegram-Init-Data`, `X-Driver-Id`. |
 
@@ -27,6 +28,7 @@
 - `POST /trip/cancel/driver` — driver auth; body `{ "trip_id" }`.
 - `POST /trip/cancel/rider` — rider auth; body `{ "trip_id" }`.
 - `POST /driver/location` — driver auth; body `{ "lat", "lng", "accuracy?", "timestamp?" }` where **`timestamp`** is optional Unix **seconds** (integer), not ISO-8601.
+- `POST /driver/offline` — driver auth; no body required; clears **`is_active`** / **`live_location_active`** / **`last_live_location_at`** (same idea as Telegram live end). Native app **OFFLINE** toggle should call this.
 - `GET /driver/promo-program` — driver auth; JSON promo program status (`promo_balance`, signup flag, first-three trip bonus progress).
 - `GET /driver/referral-status` — driver auth; JSON for referred drivers: inviter id, finished trip count, threshold 3, whether inviter reward was already granted.
 - `GET /driver/available-requests` — driver auth; JSON with optional `assigned_trip` and queue arrays (see README).
