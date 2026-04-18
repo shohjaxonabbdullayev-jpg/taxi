@@ -10,7 +10,7 @@
 | **internal/auth/middleware.go** | `RequireMiniAppAuth(db, botToken)`; `RequireDriverAuth(...)` — if user already driver in context (from `TryDriverIDHeader`), continues; else **Telegram initData only** (X-Driver-Id is handled only in `TryDriverIDHeader`). `RequireRiderAuth` uses rider bot token only. |
 | **internal/auth/driver_x_header.go** | `ResolveDriverUserForXDriverID` — single resolver for HTTP + WS: tries internal **`users.id`** then **`users.telegram_id`**, requires **`drivers.verification_status = approved`**. `TryDriverIDHeader(db, opts)` runs first on driver routes; optional `DRIVER_AUTH_DEBUG` logs only booleans (never the header value). |
 | **internal/handlers/trip.go** | Trip handlers take `db`; get `User` from context; use `auth.AuthorizeTripAccess`; call services with `u.UserID` (no driver_id/rider_id from body). Request bodies: only `trip_id`. |
-| **internal/handlers/driver_location.go** | Get driver from context; body only `lat`, `lng`, `accuracy` (no `driver_id`). |
+| **internal/handlers/driver_location.go** | Get driver from context; body `lat`, `lng`, optional `accuracy`, optional **`timestamp`** (Unix **seconds**, JSON integer; no ISO string). |
 | **internal/ws/handler.go** | `ServeWsWithAuth(hub, db, driverToken, riderToken, enableDriverIDHeader, w, r)` — before upgrade: initData (driver or rider token) **or**, when `enableDriverIDHeader` and initData absent, `X-Driver-Id` for assigned driver; then `AuthorizeTripAccess`; 401/403 on failure; upgrade. |
 | **internal/server/server.go** | Apply `tryDriverID` then `driverAuth` on driver routes; `riderAuth` on rider cancel; GET /ws → `ServeWsWithAuth`. CORS allows `Authorization`, `X-Telegram-Init-Data`, `X-Driver-Id`. |
 
@@ -26,7 +26,7 @@
 - `POST /trip/finish` — driver auth; body `{ "trip_id" }`; driver may only finish their assigned trip.
 - `POST /trip/cancel/driver` — driver auth; body `{ "trip_id" }`.
 - `POST /trip/cancel/rider` — rider auth; body `{ "trip_id" }`.
-- `POST /driver/location` — driver auth; body `{ "lat", "lng", "accuracy?" }`.
+- `POST /driver/location` — driver auth; body `{ "lat", "lng", "accuracy?", "timestamp?" }` where **`timestamp`** is optional Unix **seconds** (integer), not ISO-8601.
 - `GET /driver/promo-program` — driver auth; JSON promo program status (`promo_balance`, signup flag, first-three trip bonus progress).
 - `GET /driver/referral-status` — driver auth; JSON for referred drivers: inviter id, finished trip count, threshold 3, whether inviter reward was already granted.
 - `GET /driver/available-requests` — driver auth; JSON with optional `assigned_trip` and queue arrays (see README).
@@ -78,5 +78,6 @@ The backend sets the driver in the auth context so trip start/location/finish/ca
 
 **Driver location**
 
-1. `POST /driver/location` with header `X-Telegram-Init-Data` and body `{ "lat": 41.2, "lng": 69.3 }`.
-2. Middleware sets driver in context; handler uses `u.UserID` for DB update and AddPoint.
+1. `POST /driver/location` with header `X-Telegram-Init-Data` and/or **`X-Driver-Id`** (same as other driver routes) and body `{ "lat": 41.2, "lng": 69.3 }`.
+2. Optional: **`"timestamp": 1730000000`** (Unix **seconds** as a JSON number) for fix time; if omitted, server time is used.
+3. Middleware sets driver in context; handler uses `u.UserID` for DB update and AddPoint.
