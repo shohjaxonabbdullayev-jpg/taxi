@@ -62,6 +62,17 @@ func isMissingColumnErr(err error) bool {
 	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
 }
 
+func isFreshWithin(last sql.NullString, seconds int) bool {
+	if !last.Valid || strings.TrimSpace(last.String) == "" {
+		return false
+	}
+	t, err := parseUTCTime(last.String)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) <= time.Duration(seconds)*time.Second
+}
+
 func sampleInt64(ids []int64, maxItems int) string {
 	if len(ids) == 0 {
 		return "[]"
@@ -378,25 +389,32 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			if !s.isDriverSharingLiveLocation(ctx, c.UserID) {
 				text += liveLocationOrderHint
 			}
-			msg := tgbotapi.NewMessage(c.TelegramID, text)
-			msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
-				),
-			)
-			sentMsg, sendErr := s.bot.Send(msg)
-			chatID, msgID := c.TelegramID, 0
-			if sendErr != nil {
-				log.Printf("match_service: send to driver %d: %v", c.TelegramID, truncateLog(sendErr.Error(), logMaxChars))
-				// Standalone / web drivers poll GET /driver/available-requests; rows are only created after Send today.
-				// When ENABLE_DRIVER_HTTP_LIVE_LOCATION is on, still record the offer so native clients see it.
-				if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
-					continue
+			// Delivery choice:
+			// - If driver is online via native app (fresh app_last_seen_at), do NOT send Telegram — app polls request_notifications.
+			// - Otherwise, send Telegram as before.
+			appFresh := c.AppActive == 1 && isFreshWithin(c.AppLastAt, driverLocationFreshnessSeconds)
+			chatID, msgID := int64(0), 0
+			if !appFresh {
+				msg := tgbotapi.NewMessage(c.TelegramID, text)
+				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
+					),
+				)
+				sentMsg, sendErr := s.bot.Send(msg)
+				chatID = c.TelegramID
+				if sendErr != nil {
+					log.Printf("match_service: send to driver %d: %v", c.TelegramID, truncateLog(sendErr.Error(), logMaxChars))
+					// For Telegram delivery failures, only keep the app polling row when HTTP live is enabled.
+					// For app-fresh drivers we already skip Telegram entirely.
+					if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
+						continue
+					}
+					chatID = 0
+					msgID = 0
+				} else {
+					msgID = sentMsg.MessageID
 				}
-				chatID = 0
-				msgID = 0
-			} else {
-				msgID = sentMsg.MessageID
 			}
 			if err := s.insertOfferNotification(ctx, requestID, c.UserID, chatID, msgID); err != nil {
 				log.Printf("match_service: insert request_notifications request=%s driver=%d: %v", requestID, c.UserID, truncateLog(err.Error(), logMaxChars))
@@ -666,17 +684,20 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 				tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+item.requestID),
 			),
 		)
-		sentMsg, sendErr := s.bot.Send(msg)
-		chatID, msgID := telegramID, 0
-		if sendErr != nil {
-			log.Printf("match_service: send pending request to driver %d: %v", driverUserID, truncateLog(sendErr.Error(), logMaxChars))
-			if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
-				continue
+		chatID, msgID := int64(0), 0
+		if !appFresh {
+			sentMsg, sendErr := s.bot.Send(msg)
+			chatID = telegramID
+			if sendErr != nil {
+				log.Printf("match_service: send pending request to driver %d: %v", driverUserID, truncateLog(sendErr.Error(), logMaxChars))
+				if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
+					continue
+				}
+				chatID = 0
+				msgID = 0
+			} else {
+				msgID = sentMsg.MessageID
 			}
-			chatID = 0
-			msgID = 0
-		} else {
-			msgID = sentMsg.MessageID
 		}
 		if err := s.insertOfferNotification(ctx, item.requestID, driverUserID, chatID, msgID); err != nil {
 			log.Printf("match_service: insert pending notification request=%s driver=%d: %v", item.requestID, driverUserID, truncateLog(err.Error(), logMaxChars))
@@ -863,31 +884,36 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		text += liveLocationOrderHint
 	}
 
-	chatID, msgID := telegramID, 0
-	if s.bot != nil {
-		msg := tgbotapi.NewMessage(telegramID, text)
-		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
-			),
-		)
-		sentMsg, sendErr := s.bot.Send(msg)
-		if sendErr != nil {
-			log.Printf("admin_offer: telegram send driver=%d request=%s err=%v", driverUserID, requestID, truncateLog(sendErr.Error(), logMaxChars))
+	// If the driver is online via app (fresh app_last_seen_at), prefer app polling delivery (no Telegram send).
+	appFresh := appActive == 1 && isFreshWithin(appLast, driverLocationFreshnessSeconds)
+	chatID, msgID := int64(0), 0
+	if !appFresh {
+		chatID = telegramID
+		if s.bot != nil {
+			msg := tgbotapi.NewMessage(telegramID, text)
+			msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
+				),
+			)
+			sentMsg, sendErr := s.bot.Send(msg)
+			if sendErr != nil {
+				log.Printf("admin_offer: telegram send driver=%d request=%s err=%v", driverUserID, requestID, truncateLog(sendErr.Error(), logMaxChars))
+				if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
+					return fmt.Errorf("%w: %v", ErrAdminOfferTelegramFail, sendErr)
+				}
+				chatID = 0
+				msgID = 0
+			} else {
+				msgID = sentMsg.MessageID
+			}
+		} else {
 			if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
-				return fmt.Errorf("%w: %v", ErrAdminOfferTelegramFail, sendErr)
+				return ErrAdminOfferNoTelegram
 			}
 			chatID = 0
 			msgID = 0
-		} else {
-			msgID = sentMsg.MessageID
 		}
-	} else {
-		if s.cfg == nil || !s.cfg.EnableDriverHTTPLiveLocation {
-			return ErrAdminOfferNoTelegram
-		}
-		chatID = 0
-		msgID = 0
 	}
 
 	if !hasNotif {
