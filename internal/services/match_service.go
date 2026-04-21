@@ -206,6 +206,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		balanceCond = " AND d.balance > 0"
 	}
 	placeholders := "?"
+	// Use only anonymous '?' placeholders (avoid mixing ?1/?2 with '?', which can miscount in libSQL).
 	args := []interface{}{locationFreshSinceStr, locationFreshSinceStr}
 	for i := 1; i < len(gridIDs); i++ {
 		placeholders += ",?"
@@ -220,9 +221,9 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		WHERE 1=1` + balanceCond + `
 		  AND (
 				(COALESCE(d.live_location_active, 0) = 1
-				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2)
+				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?)
 			 OR (COALESCE(d.app_location_active, 0) = 1
-				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
+				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?)
 		  )` + `
 		  AND d.verification_status = 'approved'
 		  AND ` + legal.SQLDriverDispatchLegalOK + `
@@ -239,7 +240,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE 1=1` + balanceCond + `
 		  AND COALESCE(d.live_location_active, 0) = 1
-		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
+		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?
 		  AND d.verification_status = 'approved'
 		  AND ` + legal.SQLDriverDispatchLegalOK + `
 		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
