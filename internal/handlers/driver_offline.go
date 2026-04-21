@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"taxi-mvp/internal/auth"
@@ -25,8 +26,19 @@ func DriverManualOffline(db *sql.DB) gin.HandlerFunc {
 		}
 		ctx := c.Request.Context()
 		_, err := db.ExecContext(ctx, `
-			UPDATE drivers SET is_active = 0, manual_offline = 0, live_location_active = 0, last_live_location_at = NULL
+			UPDATE drivers
+			SET is_active = 0, manual_offline = 0,
+			    live_location_active = 0, last_live_location_at = NULL,
+			    app_location_active = 0
 			WHERE user_id = ?1`, u.UserID)
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
+			// Backward compatible for tests / unmigrated DB: app_location_active may not exist yet.
+			_, err = db.ExecContext(ctx, `
+				UPDATE drivers
+				SET is_active = 0, manual_offline = 0,
+				    live_location_active = 0, last_live_location_at = NULL
+				WHERE user_id = ?1`, u.UserID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 			return

@@ -106,6 +106,7 @@ func main() {
 	go assignSvc.RunRadiusExpansionWorker(ctx, matchSvc)
 	go services.RunOnlineBonusWorker(ctx, database, driverBot)
 	go services.RunDriverApprovalNotifier(ctx, database, driverBot)
+	go services.RunDriverAppAutoOfflineWorker(ctx, database)
 	go driverbot.RunLegalReacceptNotifier(ctx, database, driverBot)
 
 	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc)
