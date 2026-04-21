@@ -212,8 +212,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		WHERE 1=1`+balanceCond+`
 		  AND (
 				(COALESCE(d.live_location_active, 0) = 1
-				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-				 AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1)
+				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2)
 			 OR (COALESCE(d.app_location_active, 0) = 1
 				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
 		  )`+`
@@ -235,8 +234,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			WHERE 1=1`+balanceCond+`
 			  AND (
 					(COALESCE(d.live_location_active, 0) = 1
-					 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-					 AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1)
+					 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2)
 				 OR (COALESCE(d.app_location_active, 0) = 1
 					 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
 			  )`+`
