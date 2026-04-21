@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"taxi-mvp/internal/auth"
@@ -86,33 +88,71 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		eLat, eLng := services.GetEffectiveDriverLocation(loc)
 		log.Println("Driver location source:", services.GetEffectiveDriverLocationSource(loc))
 
-		rows, err := db.QueryContext(ctx, `
-			SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.expires_at,'')
-			FROM request_notifications n
-			JOIN ride_requests r ON r.id = n.request_id
-			WHERE n.driver_user_id = ?1 AND n.status = ?2
-			  AND r.status = ?3 AND r.expires_at > datetime('now')`,
-			driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+		// Optional long-polling: if wait_sec is provided, block up to that many seconds
+		// and return immediately when at least one offer becomes available.
+		waitSec := 0
+		if s := strings.TrimSpace(c.Query("wait_sec")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				waitSec = n
+			}
+		}
+		if waitSec > 25 {
+			waitSec = 25
+		}
+
+		queryOffers := func() ([]DriverAvailableOffer, error) {
+			rows, err := db.QueryContext(ctx, `
+				SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.expires_at,'')
+				FROM request_notifications n
+				JOIN ride_requests r ON r.id = n.request_id
+				WHERE n.driver_user_id = ?1 AND n.status = ?2
+				  AND r.status = ?3 AND r.expires_at > datetime('now')`,
+				driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+
+			var offers []DriverAvailableOffer
+			for rows.Next() {
+				var o DriverAvailableOffer
+				if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.ExpiresAt); err != nil {
+					continue
+				}
+				if eLat != 0 || eLng != 0 {
+					o.DistanceKm = utils.HaversineMeters(eLat, eLng, o.PickupLat, o.PickupLng) / 1000
+				}
+				offers = append(offers, o)
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			return offers, nil
+		}
+
+		offers, err := queryOffers()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
 			return
 		}
-		defer rows.Close()
-
-		var offers []DriverAvailableOffer
-		for rows.Next() {
-			var o DriverAvailableOffer
-			if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.ExpiresAt); err != nil {
-				continue
+		if waitSec > 0 && len(offers) == 0 {
+			deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
+			for time.Now().Before(deadline) {
+				select {
+				case <-ctx.Done():
+					break
+				default:
+				}
+				time.Sleep(500 * time.Millisecond)
+				offers, err = queryOffers()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+					return
+				}
+				if len(offers) > 0 {
+					break
+				}
 			}
-			if eLat != 0 || eLng != 0 {
-				o.DistanceKm = utils.HaversineMeters(eLat, eLng, o.PickupLat, o.PickupLng) / 1000
-			}
-			offers = append(offers, o)
-		}
-		if err := rows.Err(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
-			return
 		}
 
 		var assigned *DriverAssignedTripStub
