@@ -176,7 +176,13 @@ func TripArrived(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
 			c.JSON(http.StatusForbidden, gin.H{"error": "not assigned to this trip"})
 			return
 		}
-		result, err := tripSvc.MarkArrived(ctx, req.TripID, u.UserID)
+		opts := services.MarkArrivedOptions{}
+		// Native driver app auth (phone+OTP) sets TelegramUserID=0 and uses X-Driver-Id.
+		// For that flow, allow "Yetib keldim" without the pickup distance threshold.
+		if u.TelegramUserID == 0 {
+			opts.SkipPickupDistance = true
+		}
+		result, err := tripSvc.MarkArrivedWithOpts(ctx, req.TripID, u.UserID, opts)
 		if err != nil {
 			writeTripError(c, req.TripID, err)
 			return

@@ -112,6 +112,12 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 	if s.cfg != nil && s.cfg.PickupStartMaxMeters > 0 {
 		maxM = int64(s.cfg.PickupStartMaxMeters)
 	}
+	return s.ensureDriverNearPickupWithMaxM(ctx, tripID, driverUserID, pickupLat, pickupLng, op, maxM)
+}
+
+// ensureDriverNearPickupWithMaxM is the same as ensureDriverNearPickup, but uses an explicit max meters threshold.
+// When maxM <= 0, the distance threshold is skipped (all other checks remain).
+func (s *TripService) ensureDriverNearPickupWithMaxM(ctx context.Context, tripID string, driverUserID int64, pickupLat, pickupLng float64, op string, maxM int64) error {
 	var lastLat, lastLng sql.NullFloat64
 	var lastLive sql.NullString
 	var liveActive int
@@ -173,7 +179,7 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 	dLat, dLng := GetEffectiveDriverLocation(loc)
 	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
 	distM := utils.HaversineMeters(dLat, dLng, pickupLat, pickupLng)
-	if distM > float64(maxM) {
+	if maxM > 0 && distM > float64(maxM) {
 		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=too_far_from_pickup distance_m=%.1f max_m=%d pickup=(%.6f,%.6f) driver=(%.6f,%.6f)",
 			op, tripID, driverUserID, distM, maxM, pickupLat, pickupLng, dLat, dLng)
 		return domain.ErrTooFarFromPickup
@@ -323,6 +329,40 @@ func (s *TripService) assertMarkArrivedDriverAndPickup(ctx context.Context, trip
 	return nil
 }
 
+type MarkArrivedOptions struct {
+	// SkipPickupDistance disables only the pickup distance threshold, keeping live-location freshness checks.
+	SkipPickupDistance bool
+}
+
+func (s *TripService) assertMarkArrivedDriverAndPickupWithOpts(ctx context.Context, tripID string, driverUserID int64, opts MarkArrivedOptions) error {
+	var dbDriver int64
+	err := s.db.QueryRowContext(ctx, `SELECT driver_user_id FROM trips WHERE id = ?1`, tripID).Scan(&dbDriver)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
+			return domain.ErrTripNotFound
+		}
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, tripErrStr(err))
+		return err
+	}
+	if dbDriver != driverUserID {
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=driver_mismatch", tripID, driverUserID)
+		return domain.ErrInvalidTransition
+	}
+	pickupLat, pickupLng, perr := s.pickupCoordsForTrip(ctx, tripID)
+	if perr != nil {
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=pickup_coords_error detail=%v", tripID, driverUserID, tripErrStr(perr))
+		return perr
+	}
+	if opts.SkipPickupDistance {
+		if err := s.ensureDriverNearPickupWithMaxM(ctx, tripID, driverUserID, pickupLat, pickupLng, "mark_arrived_app", 0); err != nil {
+			return err
+		}
+		return nil
+	}
+	return s.ensureDriverNearPickup(ctx, tripID, driverUserID, pickupLat, pickupLng, "mark_arrived")
+}
+
 // assertMarkArrivedDriverMatches checks only trip.driver_user_id matches the caller.
 // Used for ARRIVED noop retries so stale live location doesn't block rider notifications.
 func (s *TripService) assertMarkArrivedDriverMatches(ctx context.Context, tripID string, driverUserID int64) error {
@@ -357,6 +397,11 @@ func (s *TripService) markArrivedNotifyEnterAndSend(ctx context.Context, tripID 
 
 // MarkArrived sets status to ARRIVED from WAITING when the driver is near pickup (same checks as starting from WAITING).
 func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUserID int64) (*TripActionResult, error) {
+	return s.MarkArrivedWithOpts(ctx, tripID, driverUserID, MarkArrivedOptions{})
+}
+
+// MarkArrivedWithOpts is like MarkArrived but allows app-specific behavior tweaks.
+func (s *TripService) MarkArrivedWithOpts(ctx context.Context, tripID string, driverUserID int64, opts MarkArrivedOptions) (*TripActionResult, error) {
 	current, err := s.tripRepo.GetStatus(ctx, tripID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -378,7 +423,7 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=invalid_transition current_status=%s", tripID, driverUserID, current)
 		return nil, err
 	}
-	if err := s.assertMarkArrivedDriverAndPickup(ctx, tripID, driverUserID); err != nil {
+	if err := s.assertMarkArrivedDriverAndPickupWithOpts(ctx, tripID, driverUserID, opts); err != nil {
 		return nil, err
 	}
 	n, err := s.tripRepo.UpdateToArrived(ctx, tripID, driverUserID)
