@@ -107,7 +107,9 @@ func isApprovedDriver(l *driverLookup) bool {
 	if l == nil {
 		return false
 	}
-	if l.UserID == 0 || !l.HasDriverRow || !strings.EqualFold(strings.TrimSpace(l.UserRole), "driver") {
+	// OTP eligibility should be based on driver approval, not users.role.
+	// Some deployments may have users.role out of sync (e.g. role=rider but an approved drivers row exists).
+	if l.UserID == 0 || !l.HasDriverRow {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(l.VerificationStatus.String), "approved")
