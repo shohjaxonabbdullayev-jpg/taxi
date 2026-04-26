@@ -40,6 +40,8 @@ const (
 
 	cbDestPage   = "dest_page:"
 	cbDestPlace  = "dest_place:"
+	cbReqConfirm = "req_confirm:"
+	cbReqChange  = "req_change:"
 )
 
 type destinationWebAppPayload struct {
@@ -369,6 +371,14 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	}
 	if strings.HasPrefix(q.Data, cbDestPlace) {
 		handleDestinationPlaceCallback(bot, db, cfg, q, matchService)
+		return
+	}
+	if strings.HasPrefix(q.Data, cbReqConfirm) {
+		handleRequestConfirmCallback(bot, db, cfg, q, matchService)
+		return
+	}
+	if strings.HasPrefix(q.Data, cbReqChange) {
+		handleRequestChangeCallback(bot, db, cfg, q, matchService)
 		return
 	}
 	_ = cfg
@@ -719,19 +729,18 @@ func handleDestinationPlaceCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *confi
 		return
 	}
 	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, dropLat, dropLng)
+	// Reset TTL from confirmation moment (selection step), so users can browse destination without expiring.
+	ttl := "+120 seconds"
+	if cfg != nil && cfg.RequestExpiresSeconds > 0 {
+		ttl = fmt.Sprintf("+%d seconds", cfg.RequestExpiresSeconds)
+	}
 	_, _ = db.ExecContext(context.Background(), `
 		UPDATE ride_requests
-		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
+		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
 		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
-		dropLat, dropLng, strings.TrimSpace(name), estPrice, requestID, riderUserID, domain.RequestStatusPending)
+		dropLat, dropLng, strings.TrimSpace(name), estPrice, ttl, requestID, riderUserID, domain.RequestStatusPending)
 
-	if matchService != nil {
-		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
-			log.Printf("rider: broadcast request: %v", err)
-		}
-	}
-	send(bot, q.Message.Chat.ID, fmt.Sprintf("✅ Сўров кетди.\n💰 Тахминий нарх: %d", estPrice))
-	sendCancelKeyboard(bot, q.Message.Chat.ID)
+	sendRiderEstimateConfirm(bot, q.Message.Chat.ID, requestID, estPrice)
 }
 
 func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, chatID int64, riderUserID int64, raw string) {
@@ -764,19 +773,74 @@ func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 	}
 	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, p.Lat, p.Lng)
 	name := strings.TrimSpace(p.Name)
+	ttl := "+120 seconds"
+	if cfg != nil && cfg.RequestExpiresSeconds > 0 {
+		ttl = fmt.Sprintf("+%d seconds", cfg.RequestExpiresSeconds)
+	}
 	_, _ = db.ExecContext(context.Background(), `
 		UPDATE ride_requests
-		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
+		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
 		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
-		p.Lat, p.Lng, name, estPrice, requestID, riderUserID, domain.RequestStatusPending)
+		p.Lat, p.Lng, name, estPrice, ttl, requestID, riderUserID, domain.RequestStatusPending)
 
+	sendRiderEstimateConfirm(bot, chatID, requestID, estPrice)
+}
+
+func sendRiderEstimateConfirm(bot *tgbotapi.BotAPI, chatID int64, requestID string, estPrice int64) {
+	text := fmt.Sprintf("💰 Тахминий нарх: %d\n\nТасдиқлайсизми?", estPrice)
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Тасдиқлаш", cbReqConfirm+requestID),
+			tgbotapi.NewInlineKeyboardButtonData("◀️ Ўзгартириш", cbReqChange+requestID),
+		),
+	)
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("rider: send estimate confirm: %v", err)
+	}
+}
+
+func handleRequestChangeCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, q *tgbotapi.CallbackQuery, matchService *services.MatchService) {
+	requestID := strings.TrimSpace(strings.TrimPrefix(q.Data, cbReqChange))
+	var riderUserID int64
+	_ = db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, q.From.ID).Scan(&riderUserID)
+	if riderUserID == 0 || requestID == "" {
+		return
+	}
+	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, 1)
+	_ = matchService
+}
+
+func handleRequestConfirmCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, q *tgbotapi.CallbackQuery, matchService *services.MatchService) {
+	requestID := strings.TrimSpace(strings.TrimPrefix(q.Data, cbReqConfirm))
+	if requestID == "" {
+		return
+	}
+	var riderUserID int64
+	_ = db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, q.From.ID).Scan(&riderUserID)
+	if riderUserID == 0 {
+		return
+	}
+	// Ensure destination + estimate exist and request is still valid.
+	var est int64
+	var st string
+	err := db.QueryRowContext(context.Background(), `
+		SELECT COALESCE(estimated_price, 0), status
+		FROM ride_requests
+		WHERE id = ?1 AND rider_user_id = ?2 AND expires_at > datetime('now')`,
+		requestID, riderUserID).Scan(&est, &st)
+	if err != nil || st != domain.RequestStatusPending || est <= 0 {
+		send(bot, q.Message.Chat.ID, "Хатолик. Қайта уриниб кўринг.")
+		return
+	}
 	if matchService != nil {
 		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
 			log.Printf("rider: broadcast request: %v", err)
 		}
 	}
-	send(bot, chatID, fmt.Sprintf("✅ Сўров кетди.\n💰 Тахминий нарх: %d", estPrice))
-	sendCancelKeyboard(bot, chatID)
+	send(bot, q.Message.Chat.ID, "✅ Сўров кетди. Ҳозир яқин ҳайдовчиларга юбордим.")
+	sendCancelKeyboard(bot, q.Message.Chat.ID)
 }
 
 func sendCancelKeyboard(bot *tgbotapi.BotAPI, chatID int64) {

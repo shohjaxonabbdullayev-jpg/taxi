@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
@@ -37,7 +39,8 @@ func validLatLngRiderDestination(lat, lng float64) bool {
 
 // RiderSetDestination sets drop point + estimated_price for a PENDING ride request using Telegram Mini App init_data.
 // This is additive and does not touch trip lifecycle or settlement logic.
-func RiderSetDestination(db *sql.DB, cfg *config.Config, matchSvc *services.MatchService, fareSvc *services.FareService) gin.HandlerFunc {
+// It does NOT dispatch to drivers; the rider must confirm after seeing the estimate.
+func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotAPI, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if db == nil || cfg == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "service unavailable"})
@@ -122,13 +125,19 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, matchSvc *services.Matc
 			est = utils.CalculateFareRounded(float64(cfg.StartingFee), float64(cfg.PricePerKm), distanceKm)
 		}
 
+		// Reset TTL from destination selection moment, so users can browse without expiring.
+		ttl := "+120 seconds"
+		if cfg != nil && cfg.RequestExpiresSeconds > 0 {
+			ttl = "+" + strconv.Itoa(cfg.RequestExpiresSeconds) + " seconds"
+		}
+
 		// Persist destination and estimate. If schema is not migrated yet, fail fast with a clear error.
 		_, err = db.ExecContext(ctx, `
 			UPDATE ride_requests
-			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
-			WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7 AND expires_at > datetime('now')
+			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
+			WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8 AND expires_at > datetime('now')
 			  AND (drop_lat IS NULL OR drop_lng IS NULL)`,
-			body.Lat, body.Lng, body.Name, est, body.RequestID, riderUserID, domain.RequestStatusPending)
+			body.Lat, body.Lng, body.Name, est, ttl, body.RequestID, riderUserID, domain.RequestStatusPending)
 		if err != nil {
 			if isMissingColumnErr(err) {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "db migration required"})
@@ -139,9 +148,19 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, matchSvc *services.Matc
 			return
 		}
 
-		// Trigger dispatch (same entry point as rider bot after selection).
-		if matchSvc != nil {
-			_ = matchSvc.BroadcastRequest(ctx, body.RequestID)
+		// Notify rider in Telegram to confirm the estimate (works even if WebAppData sendData doesn't arrive).
+		if riderBot != nil {
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("✅ Тасдиқлаш", "req_confirm:"+body.RequestID),
+					tgbotapi.NewInlineKeyboardButtonData("◀️ Ўзгартириш", "req_change:"+body.RequestID),
+				),
+			)
+			m := tgbotapi.NewMessage(tgID, "💰 Тахминий нарх: "+strconv.FormatInt(est, 10)+"\n\nТасдиқлайсизми?")
+			m.ReplyMarkup = kb
+			if _, err := riderBot.Send(m); err != nil {
+				log.Printf("rider_destination: notify rider chat=%d err=%v", tgID, err)
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{"ok": true, "estimated_price": est})

@@ -180,11 +180,14 @@ func (s *MatchService) StartPriorityDispatch(ctx context.Context, requestID stri
 	go s.runPriorityDispatch(ctx, requestID)
 }
 
-// requestStillDispatchable returns true if the request is PENDING and not past TTL (expires_at > now).
+// requestStillDispatchable returns true if the request is PENDING, not expired, and has an estimate ready.
+// (Destination selection is required before dispatch.)
 func (s *MatchService) requestStillDispatchable(ctx context.Context, requestID string) bool {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT 1 FROM ride_requests WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')`,
+		SELECT 1 FROM ride_requests
+		WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')
+		  AND COALESCE(estimated_price, 0) > 0`,
 		requestID, domain.RequestStatusPending).Scan(&count)
 	return err == nil && count == 1
 }
@@ -200,6 +203,10 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	}
 	var estPrice int64
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(estimated_price, 0) FROM ride_requests WHERE id = ?1`, requestID).Scan(&estPrice)
+	if estPrice <= 0 {
+		// Destination not confirmed yet; do not dispatch.
+		return
+	}
 	var riderPhone string
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, requestID).Scan(&riderPhone)
 	riderPhone = strings.TrimSpace(riderPhone)

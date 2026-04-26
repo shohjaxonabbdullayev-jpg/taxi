@@ -87,7 +87,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 	// Mini App (Custom Location) reliable confirm: server-side destination set + estimated price + dispatch.
 	// Route-scoped CORS for Vercel-hosted mini app (keeps global CORS behavior unchanged for existing clients).
-	r.POST("/rider/request/destination", corsForMiniApp("https://custom-location.vercel.app"), handlers.RiderSetDestination(db, cfg, matchSvc, fareSvc))
+	r.POST("/rider/request/destination", corsForMiniApp("https://custom-location.vercel.app"), handlers.RiderSetDestination(db, cfg, riderBot, fareSvc))
 
 	// Legal: active documents + accept (active versions only; X-Driver-Id allowed when enabled).
 	r.GET("/legal/active", tryDriverID, appUserAuth, handlers.LegalActiveDocuments(db))

@@ -191,6 +191,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 	rows, err := tx.QueryContext(ctx, `
 		UPDATE ride_requests SET status = ?1
 		WHERE status = ?2 AND expires_at <= datetime('now')
+		  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL
 		RETURNING id, rider_user_id`,
 		domain.RequestStatusExpired, domain.RequestStatusPending)
 	if err != nil {
@@ -276,7 +277,8 @@ func (s *AssignmentService) expandRadiusAndRebroadcast(ctx context.Context, matc
 		WHERE status = ?1 AND expires_at > datetime('now')
 		  AND (radius_expanded_at IS NULL)
 		  AND radius_km < ?2
-		  AND created_at <= ?3`,
+		  AND created_at <= ?3
+		  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL`,
 		domain.RequestStatusPending, s.cfg.ExpandedRadiusKm, cutoff)
 	if err != nil {
 		log.Printf("assignment_service: radius expansion query: %v", assignmentErrStr(err))
