@@ -1,0 +1,150 @@
+package handlers
+
+import (
+	"database/sql"
+	"errors"
+	"log"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"taxi-mvp/internal/auth"
+	"taxi-mvp/internal/config"
+	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/services"
+	"taxi-mvp/internal/utils"
+)
+
+type riderSetDestinationBody struct {
+	RequestID string  `json:"request_id"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	Name      string  `json:"name"`
+	InitData  string  `json:"init_data"`
+}
+
+func isMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
+func validLatLngRiderDestination(lat, lng float64) bool {
+	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+}
+
+// RiderSetDestination sets drop point + estimated_price for a PENDING ride request using Telegram Mini App init_data.
+// This is additive and does not touch trip lifecycle or settlement logic.
+func RiderSetDestination(db *sql.DB, cfg *config.Config, matchSvc *services.MatchService, fareSvc *services.FareService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if db == nil || cfg == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "service unavailable"})
+			return
+		}
+		var body riderSetDestinationBody
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid body"})
+			return
+		}
+		body.RequestID = strings.TrimSpace(body.RequestID)
+		body.Name = strings.TrimSpace(body.Name)
+		body.InitData = strings.TrimSpace(body.InitData)
+		if body.RequestID == "" || body.InitData == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "request_id and init_data required"})
+			return
+		}
+		if !validLatLngRiderDestination(body.Lat, body.Lng) {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid lat/lng"})
+			return
+		}
+
+		tgID, err := auth.VerifyMiniAppInitData(cfg.RiderBotToken, body.InitData)
+		if err != nil || tgID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "invalid init_data"})
+			return
+		}
+
+		ctx := c.Request.Context()
+
+		var riderUserID int64
+		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, tgID).Scan(&riderUserID); err != nil || riderUserID == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "rider not found"})
+			return
+		}
+
+		// Load request and validate ownership + status.
+		var pickupLat, pickupLng float64
+		var status string
+		var expiresAt string
+		var dropLat, dropLng sql.NullFloat64
+		err = db.QueryRowContext(ctx, `
+			SELECT pickup_lat, pickup_lng, status, COALESCE(expires_at,''), drop_lat, drop_lng
+			FROM ride_requests
+			WHERE id = ?1 AND rider_user_id = ?2`,
+			body.RequestID, riderUserID).Scan(&pickupLat, &pickupLng, &status, &expiresAt, &dropLat, &dropLng)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "request not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "db error"})
+			return
+		}
+		if status != domain.RequestStatusPending {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "request not pending"})
+			return
+		}
+		// Expiry gate (same semantics as dispatch).
+		var still int
+		_ = db.QueryRowContext(ctx, `
+			SELECT 1 FROM ride_requests WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')`,
+			body.RequestID, domain.RequestStatusPending).Scan(&still)
+		if still != 1 {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "request expired"})
+			return
+		}
+		if dropLat.Valid && dropLng.Valid {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "destination already set"})
+			return
+		}
+
+		// Estimate price using existing pricing logic.
+		distanceKm := utils.HaversineMeters(pickupLat, pickupLng, body.Lat, body.Lng) / 1000
+		var est int64
+		if fareSvc != nil {
+			if v, err := fareSvc.CalculateFare(ctx, distanceKm); err == nil && v > 0 {
+				est = v
+			}
+		}
+		if est <= 0 {
+			est = utils.CalculateFareRounded(float64(cfg.StartingFee), float64(cfg.PricePerKm), distanceKm)
+		}
+
+		// Persist destination and estimate. If schema is not migrated yet, fail fast with a clear error.
+		_, err = db.ExecContext(ctx, `
+			UPDATE ride_requests
+			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
+			WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7 AND expires_at > datetime('now')
+			  AND (drop_lat IS NULL OR drop_lng IS NULL)`,
+			body.Lat, body.Lng, body.Name, est, body.RequestID, riderUserID, domain.RequestStatusPending)
+		if err != nil {
+			if isMissingColumnErr(err) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "db migration required"})
+				return
+			}
+			log.Printf("rider_destination: update request=%s err=%v", body.RequestID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "update failed"})
+			return
+		}
+
+		// Trigger dispatch (same entry point as rider bot after selection).
+		if matchSvc != nil {
+			_ = matchSvc.BroadcastRequest(ctx, body.RequestID)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ok": true, "estimated_price": est})
+	}
+}
+

@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,10 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
 
+	// Mini App (Custom Location) reliable confirm: server-side destination set + estimated price + dispatch.
+	// Route-scoped CORS for Vercel-hosted mini app (keeps global CORS behavior unchanged for existing clients).
+	r.POST("/rider/request/destination", corsForMiniApp("https://custom-location.vercel.app"), handlers.RiderSetDestination(db, cfg, matchSvc, fareSvc))
+
 	// Legal: active documents + accept (active versions only; X-Driver-Id allowed when enabled).
 	r.GET("/legal/active", tryDriverID, appUserAuth, handlers.LegalActiveDocuments(db))
 	r.POST("/legal/accept", tryDriverID, appUserAuth, handlers.LegalAccept(db))
@@ -110,6 +115,26 @@ func corsMiddleware() gin.HandlerFunc {
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
+		}
+		c.Next()
+	}
+}
+
+// corsForMiniApp sets strict CORS only when the Origin matches allowedOrigin.
+// It does not interfere with global CORS for other clients.
+func corsForMiniApp(allowedOrigin string) gin.HandlerFunc {
+	allowedOrigin = strings.TrimSpace(allowedOrigin)
+	return func(c *gin.Context) {
+		origin := strings.TrimSpace(c.Request.Header.Get("Origin"))
+		if allowedOrigin != "" && origin == allowedOrigin {
+			c.Header("Access-Control-Allow-Origin", allowedOrigin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Content-Type")
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(204)
+				return
+			}
 		}
 		c.Next()
 	}
