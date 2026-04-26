@@ -9,6 +9,14 @@ import (
 	"taxi-mvp/internal/models"
 )
 
+func isMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
 // PlaceRepo persists admin-managed places.
 type PlaceRepo struct {
 	db *sql.DB
@@ -26,10 +34,17 @@ func (r *PlaceRepo) Create(ctx context.Context, name string, lat, lng float64) (
 	if name == "" {
 		return 0, fmt.Errorf("place name required")
 	}
+	// Backward compatible: older DBs may have places without updated_at.
 	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO places (name, lat, lng, created_at, updated_at)
 		VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))`,
 		name, lat, lng)
+	if err != nil && isMissingColumnErr(err) {
+		res, err = r.db.ExecContext(ctx, `
+			INSERT INTO places (name, lat, lng, created_at)
+			VALUES (?1, ?2, ?3, datetime('now'))`,
+			name, lat, lng)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -50,9 +65,17 @@ func (r *PlaceRepo) List(ctx context.Context) ([]models.Place, error) {
 		return nil, fmt.Errorf("place repo unavailable")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, lat, lng, created_at, updated_at
+		SELECT id, name, lat, lng, COALESCE(created_at,''), COALESCE(updated_at,'')
 		FROM places
 		ORDER BY id DESC`)
+	legacy := false
+	if err != nil && isMissingColumnErr(err) {
+		legacy = true
+		rows, err = r.db.QueryContext(ctx, `
+			SELECT id, name, lat, lng, COALESCE(created_at,'')
+			FROM places
+			ORDER BY id DESC`)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +83,15 @@ func (r *PlaceRepo) List(ctx context.Context) ([]models.Place, error) {
 	var out []models.Place
 	for rows.Next() {
 		var p models.Place
-		if err := rows.Scan(&p.ID, &p.Name, &p.Lat, &p.Lng, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			continue
+		if legacy {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Lat, &p.Lng, &p.CreatedAt); err != nil {
+				continue
+			}
+			p.UpdatedAt = p.CreatedAt
+		} else {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Lat, &p.Lng, &p.CreatedAt, &p.UpdatedAt); err != nil {
+				continue
+			}
 		}
 		out = append(out, p)
 	}
