@@ -124,6 +124,11 @@ func (n *notifiedState) markFinished(tripID string) bool {
 
 func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, tripService *services.TripService, update tgbotapi.Update, notified *notifiedState) {
 	if update.CallbackQuery != nil {
+		if update.CallbackQuery.From != nil && update.CallbackQuery.Message != nil {
+			log.Printf("rider: update callback chat_id=%d from_id=%d data=%q", update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.From.ID, update.CallbackQuery.Data)
+		} else {
+			log.Printf("rider: update callback data=%q", update.CallbackQuery.Data)
+		}
 		handleCallback(bot, db, cfg, matchService, update.CallbackQuery)
 		return
 	}
@@ -132,7 +137,14 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 	msg := update.Message
 	chatID := msg.Chat.ID
-	telegramID := msg.From.ID
+	telegramID := int64(0)
+	if msg.From != nil {
+		telegramID = msg.From.ID
+	}
+
+	// Compact debug: confirm Render is receiving rider updates at all.
+	log.Printf("rider: update message chat_id=%d from_id=%d text_len=%d has_loc=%v has_contact=%v has_webapp=%v",
+		chatID, telegramID, len(strings.TrimSpace(msg.Text)), msg.Location != nil, msg.Contact != nil, msg.WebAppData != nil)
 
 	// Debug (low-noise): WebApp confirm sends a "service-like" message with empty text.
 	// Log only when text is empty and there's no other common payload, so we can confirm what's arriving.
