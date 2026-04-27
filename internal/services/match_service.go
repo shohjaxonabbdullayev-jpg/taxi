@@ -180,15 +180,27 @@ func (s *MatchService) StartPriorityDispatch(ctx context.Context, requestID stri
 	go s.runPriorityDispatch(ctx, requestID)
 }
 
-// requestStillDispatchable returns true if the request is PENDING, not expired, and has an estimate ready.
-// (Destination selection is required before dispatch.)
+// requestStillDispatchable returns true if the request is PENDING, not expired, and ready to dispatch.
+// Destination selection + confirmation is required before dispatch.
 func (s *MatchService) requestStillDispatchable(ctx context.Context, requestID string) bool {
 	var count int
+	// Prefer strict gating (destination_confirmed). Backward compatible if column missing.
 	err := s.db.QueryRowContext(ctx, `
 		SELECT 1 FROM ride_requests
 		WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')
-		  AND COALESCE(estimated_price, 0) > 0`,
+		  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL
+		  AND COALESCE(estimated_price, 0) > 0
+		  AND COALESCE(destination_confirmed, 0) = 1`,
 		requestID, domain.RequestStatusPending).Scan(&count)
+	if err != nil && isMissingColumnErr(err) {
+		// Older schema: at least require destination coordinates + estimate.
+		err = s.db.QueryRowContext(ctx, `
+			SELECT 1 FROM ride_requests
+			WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')
+			  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL
+			  AND COALESCE(estimated_price, 0) > 0`,
+			requestID, domain.RequestStatusPending).Scan(&count)
+	}
 	return err == nil && count == 1
 }
 
@@ -619,15 +631,32 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	cutoff := time.Now().Add(-time.Duration(windowSec) * time.Second).UTC().Format("2006-01-02 15:04:05")
 	args := []interface{}{domain.RequestStatusPending, cutoff}
 	args = append(args, driverUserID)
-	// Only send requests that are still within TTL (expires_at > now)
-	rows, err := s.db.QueryContext(ctx, `
+	// Only send requests that are still within TTL (expires_at > now) AND are dispatch-ready
+	// (destination picked + confirmed + estimate > 0). Backward compatible if destination_confirmed column is missing.
+	qStrict := `
 		SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, r.pickup_grid
 		FROM ride_requests r
 		WHERE r.status = ?
 		  AND r.created_at >= ?
 		  AND r.expires_at > datetime('now')
-		  AND NOT EXISTS (SELECT 1 FROM request_notifications n WHERE n.request_id = r.id AND n.driver_user_id = ?)`,
-		args...)
+		  AND r.drop_lat IS NOT NULL AND r.drop_lng IS NOT NULL
+		  AND COALESCE(r.estimated_price, 0) > 0
+		  AND COALESCE(r.destination_confirmed, 0) = 1
+		  AND NOT EXISTS (SELECT 1 FROM request_notifications n WHERE n.request_id = r.id AND n.driver_user_id = ?)`
+	qLegacy := `
+		SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, r.pickup_grid
+		FROM ride_requests r
+		WHERE r.status = ?
+		  AND r.created_at >= ?
+		  AND r.expires_at > datetime('now')
+		  AND r.drop_lat IS NOT NULL AND r.drop_lng IS NOT NULL
+		  AND COALESCE(r.estimated_price, 0) > 0
+		  AND NOT EXISTS (SELECT 1 FROM request_notifications n WHERE n.request_id = r.id AND n.driver_user_id = ?)`
+
+	rows, err := s.db.QueryContext(ctx, qStrict, args...)
+	if err != nil && isMissingColumnErr(err) {
+		rows, err = s.db.QueryContext(ctx, qLegacy, args...)
+	}
 	if err != nil {
 		log.Printf("match_service: NotifyDriverOfPendingRequests query: %v", truncateLog(err.Error(), logMaxChars))
 		return
