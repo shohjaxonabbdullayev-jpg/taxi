@@ -967,7 +967,13 @@ func buildDestinationPickerURL(cfg *config.Config, pickupLat, pickupLng float64,
 }
 
 func estimatePrice(ctx context.Context, db *sql.DB, cfg *config.Config, pickupLat, pickupLng, dropLat, dropLng float64) int64 {
-	distanceKm := utils.HaversineMeters(pickupLat, pickupLng, dropLat, dropLng) / 1000
+	// Prefer real road-route distance (OSRM). Always fallback to Haversine to avoid breaking flow.
+	distanceKm := 0.0
+	if route, err := services.GetRouteDistance(pickupLat, pickupLng, dropLat, dropLng); err == nil && route != nil && route.DistanceMeters > 0 {
+		distanceKm = route.DistanceMeters / 1000
+	} else {
+		distanceKm = utils.HaversineMeters(pickupLat, pickupLng, dropLat, dropLng) / 1000
+	}
 	if distanceKm < 0 {
 		distanceKm = 0
 	}

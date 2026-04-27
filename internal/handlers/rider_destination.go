@@ -114,7 +114,13 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 		}
 
 		// Estimate price using existing pricing logic.
-		distanceKm := utils.HaversineMeters(pickupLat, pickupLng, body.Lat, body.Lng) / 1000
+		// Prefer real road-route distance (OSRM). Always fallback to Haversine to avoid breaking flow.
+		distanceKm := 0.0
+		if route, err := services.GetRouteDistance(pickupLat, pickupLng, body.Lat, body.Lng); err == nil && route != nil && route.DistanceMeters > 0 {
+			distanceKm = route.DistanceMeters / 1000
+		} else {
+			distanceKm = utils.HaversineMeters(pickupLat, pickupLng, body.Lat, body.Lng) / 1000
+		}
 		var est int64
 		if fareSvc != nil {
 			if v, err := fareSvc.CalculateFare(ctx, distanceKm); err == nil && v > 0 {
