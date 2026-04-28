@@ -98,3 +98,62 @@ func TestListActiveRideRequestsForMap_IncludesRiderPhone(t *testing.T) {
 		t.Fatalf("JSON should include empty rider_phone: %s", rawNo)
 	}
 }
+
+func TestListActiveRideRequestsForMap_FiltersUnconfirmedDestination(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:admin_map_rr_filter?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY,
+		telegram_id INTEGER NOT NULL DEFAULT 0,
+		phone TEXT,
+		name TEXT
+	);`)
+	// Include destination fields + confirmation flag to exercise strict filter.
+	exec(`CREATE TABLE ride_requests (
+		id TEXT PRIMARY KEY,
+		rider_user_id INTEGER,
+		pickup_lat REAL NOT NULL,
+		pickup_lng REAL NOT NULL,
+		drop_lat REAL,
+		drop_lng REAL,
+		estimated_price INTEGER,
+		destination_confirmed INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL,
+		expires_at TEXT
+	);`)
+
+	expires := time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
+	exec(`INSERT INTO users (id, telegram_id, phone, name) VALUES (1, 6891986798, '+998901112233', 'Ali');`)
+
+	// Not confirmed yet: should NOT appear on map.
+	exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, drop_lat, drop_lng, estimated_price, destination_confirmed, status, expires_at)
+		VALUES ('req-unconfirmed', 1, 41.3, 69.2, 41.31, 69.21, 12000, 0, '` + domain.RequestStatusPending + `', '` + expires + `');`)
+
+	// Confirmed: should appear.
+	exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, drop_lat, drop_lng, estimated_price, destination_confirmed, status, expires_at)
+		VALUES ('req-confirmed', 1, 41.3, 69.2, 41.31, 69.21, 12000, 1, '` + domain.RequestStatusPending + `', '` + expires + `');`)
+
+	svc := &AdminService{db: db}
+	ctx := context.Background()
+	out, err := svc.ListActiveRideRequestsForMap(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1 (%#v)", len(out), out)
+	}
+	if out[0].ID != "req-confirmed" {
+		t.Fatalf("out[0].ID = %q, want req-confirmed", out[0].ID)
+	}
+}

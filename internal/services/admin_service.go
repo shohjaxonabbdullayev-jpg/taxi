@@ -443,14 +443,31 @@ func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]Admi
 	if s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `
+
+	// Only show requests on the admin map after rider confirmed the estimate and the request is dispatch-ready.
+	// Backward compatible: if DB isn't migrated (missing columns), fall back to legacy listing.
+	qStrict := `
 		SELECT r.id, r.pickup_lat, r.pickup_lng, r.status,
 			u.id, u.telegram_id, u.phone, u.name
 		FROM ride_requests r
 		LEFT JOIN users u ON u.id = r.rider_user_id
 		WHERE r.pickup_lat IS NOT NULL AND r.pickup_lng IS NOT NULL
-		  AND r.status = ?1`,
-		domain.RequestStatusPending)
+		  AND r.status = ?1
+		  AND r.drop_lat IS NOT NULL AND r.drop_lng IS NOT NULL
+		  AND COALESCE(r.estimated_price, 0) > 0
+		  AND COALESCE(r.destination_confirmed, 0) = 1`
+	qLegacy := `
+		SELECT r.id, r.pickup_lat, r.pickup_lng, r.status,
+			u.id, u.telegram_id, u.phone, u.name
+		FROM ride_requests r
+		LEFT JOIN users u ON u.id = r.rider_user_id
+		WHERE r.pickup_lat IS NOT NULL AND r.pickup_lng IS NOT NULL
+		  AND r.status = ?1`
+
+	rows, err := s.db.QueryContext(ctx, qStrict, domain.RequestStatusPending)
+	if err != nil && adminIsMissingColumnErr(err) {
+		rows, err = s.db.QueryContext(ctx, qLegacy, domain.RequestStatusPending)
+	}
 	if err != nil {
 		return nil, err
 	}
