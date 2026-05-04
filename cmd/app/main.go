@@ -22,6 +22,7 @@ import (
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/riderlogincodes"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/services"
@@ -54,6 +55,9 @@ func main() {
 	if err := driverlogincodes.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("driver login codes schema: %v", err)
 	}
+	if err := riderlogincodes.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("rider login codes schema: %v", err)
+	}
 	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
 		log.Printf("accounting: signup promo backfill: %v", err)
 	}
@@ -83,6 +87,12 @@ func main() {
 	paymentRepo := repositories.NewPaymentRepository(database)
 	fareSvc := services.NewFareService(database, cfg)
 	tripSvc := services.NewTripService(database, tripRepo, riderBot, driverBot, cfg, hub, fareSvc, paymentRepo)
+
+	// Native rider auth (Flutter rider app: phone + Telegram OTP).
+	riderLoginCodesRepo := repositories.NewRiderLoginCodesRepo(database)
+	riderAuthSessionsRepo := repositories.NewRiderAuthSessionsRepo(database)
+	riderAuthTokens := services.NewRiderAuthTokenService(riderAuthSessionsRepo, cfg.RiderBotToken)
+	riderAuthSvc := services.NewRiderAuthService(database, riderLoginCodesRepo, riderAuthTokens, riderBot, services.RiderAuthConfig{})
 	tripSvc.OnDriverStatusUpdate = func(telegramID int64) {
 		driverbot.UpdatePinnedStatusForChat(driverBot, database, cfg, telegramID)
 	}
@@ -109,7 +119,7 @@ func main() {
 	go services.RunDriverAppAutoOfflineWorker(ctx, database)
 	go driverbot.RunLegalReacceptNotifier(ctx, database, driverBot)
 
-	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc)
+	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc, riderAuthSvc)
 	httpServer := &http.Server{Addr: cfg.APIAddr, Handler: srv}
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

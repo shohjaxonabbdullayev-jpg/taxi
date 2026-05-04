@@ -21,7 +21,8 @@ import (
 // matchSvc and driverBot are used for driver auto-availability and notifications (e.g. after trip finish + Mini App location).
 // assignSvc is used for POST /driver/accept-request (same TryAssign as the driver bot); may be nil (then accept returns 503).
 // riderBot is optional; used for rider referral link (bot username).
-func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc *services.MatchService, assignSvc *services.AssignmentService, driverBot *tgbotapi.BotAPI, riderBot *tgbotapi.BotAPI, hub *ws.Hub, fareSvc *services.FareService) *gin.Engine {
+// riderAuthSvc is optional; if non-nil, registers /v1/rider/auth/* (request-code, verify-code, refresh, logout).
+func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc *services.MatchService, assignSvc *services.AssignmentService, driverBot *tgbotapi.BotAPI, riderBot *tgbotapi.BotAPI, hub *ws.Hub, fareSvc *services.FareService, riderAuthSvc *services.RiderAuthService) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	// Avoid gin's default access logger which may include full query strings
@@ -54,6 +55,14 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	// Native driver login: phone + OTP via existing Telegram driver bot (no Telegram init_data).
 	r.POST("/auth/request-code", handlers.DriverAuthRequestCode(db, driverBot))
 	r.POST("/auth/verify-code", handlers.DriverAuthVerifyCode(db))
+
+	// Native rider login (Flutter rider app): phone + OTP via existing Telegram
+	// rider bot. Issues access_token + refresh_token + expires_in. The four
+	// endpoints under /v1/rider/auth/* are wired only when riderAuthSvc is set
+	// (so test harnesses that don't need login can pass nil).
+	if riderAuthSvc != nil {
+		handlers.RegisterRiderAuthRoutes(r, handlers.RiderAuthDeps{Service: riderAuthSvc})
+	}
 
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
 	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
