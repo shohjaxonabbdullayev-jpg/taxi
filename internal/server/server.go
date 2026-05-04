@@ -22,7 +22,8 @@ import (
 // assignSvc is used for POST /driver/accept-request (same TryAssign as the driver bot); may be nil (then accept returns 503).
 // riderBot is optional; used for rider referral link (bot username).
 // riderAuthSvc is optional; if non-nil, registers /v1/rider/auth/* (request-code, verify-code, refresh, logout).
-func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc *services.MatchService, assignSvc *services.AssignmentService, driverBot *tgbotapi.BotAPI, riderBot *tgbotapi.BotAPI, hub *ws.Hub, fareSvc *services.FareService, riderAuthSvc *services.RiderAuthService) *gin.Engine {
+// riderReqSvc is optional; if non-nil together with riderAuthSvc, registers Bearer-authenticated /v1/rider/requests* (native app ride flow).
+func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc *services.MatchService, assignSvc *services.AssignmentService, driverBot *tgbotapi.BotAPI, riderBot *tgbotapi.BotAPI, hub *ws.Hub, fareSvc *services.FareService, riderAuthSvc *services.RiderAuthService, riderReqSvc *services.RiderRequestAppService) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	// Avoid gin's default access logger which may include full query strings
@@ -62,6 +63,11 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	// (so test harnesses that don't need login can pass nil).
 	if riderAuthSvc != nil {
 		handlers.RegisterRiderAuthRoutes(r, handlers.RiderAuthDeps{Service: riderAuthSvc})
+	}
+	if riderAuthSvc != nil && riderReqSvc != nil {
+		handlers.RegisterRiderRequestRoutes(r, handlers.RiderRequestDeps{
+			DB: db, Cfg: cfg, RiderAuthSvc: riderAuthSvc, RiderReqSvc: riderReqSvc,
+		})
 	}
 
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}

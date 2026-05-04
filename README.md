@@ -127,6 +127,8 @@ Native / Flutter driver clients (same HTTP API as the Mini App): **`docs/DRIVER_
 
 Public prefixes include **`/admin/...`** (dashboard), **`/api/...`**, **`/v1/...`** — see **`internal/handlers`** and **`internal/server`**.
 
+Native rider **login** and **ride requests** use **`/v1/rider/auth/...`** and **`/v1/rider/requests/...`** with **`Authorization: Bearer`** (JWT from verify-code). No Telegram **`init_data`** on those routes — see **Native rider app (Flutter)** below.
+
 ### Health and static
 
 | Method | Path | Auth |
@@ -154,6 +156,29 @@ Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initD
 | `GET` | `/driver/referral-status` | If referred: inviter id, finished trip count, threshold 3, reward granted flag |
 | `GET` | `/driver/available-requests` | Optional **`assigned_trip`** (`trip_id`, `status`); queue arrays **`available_requests`**, **`requests`**, **`pending_requests`**, **`queue`**, **`orders`**, **`jobs`** (same items; client may merge/dedupe by `request_id`) |
 | `POST` | `/driver/accept-request` | Body **`request_id`** (accept offer) and/or **`trip_id`** (idempotent if already assigned). Uses same **`TryAssign`** as driver bot. **409** if request taken/expired |
+
+### Native rider app (Flutter)
+
+Use the **same API origin** as the rest of the backend (e.g. Render). Auth responses match **`docs/AUTH.md`** / rider-auth handler comments where applicable.
+
+**Auth** (no Mini App `init_data`):
+
+| Method | Path | Body | Notes |
+|--------|------|------|--------|
+| `POST` | `/v1/rider/auth/request-code` | `{ "phone": "+998..." }` | OTP via rider Telegram bot |
+| `POST` | `/v1/rider/auth/verify-code` | `{ "phone", "code" }` | Returns **`access_token`**, **`refresh_token`**, **`expires_in`** |
+| `POST` | `/v1/rider/auth/refresh` | `{ "refresh_token" }` | Rotates tokens |
+| `POST` | `/v1/rider/auth/logout` | (empty JSON ok) | Header **`Authorization: Bearer <access_token>`** |
+
+**Ride requests** — on every call below, set **`Authorization: Bearer <access_token>`**. Lifecycle matches the Telegram rider bot: **`PENDING`** pickup row → destination + server **`estimated_price`** → **`destination_confirmed`** + **`MatchService.BroadcastRequest`** (same driver notification path as bot confirm). The server **never** trusts a client-supplied fare; only **`estimated_price`** from step 2 is stored.
+
+| Method | Path | Body (JSON) | Success (examples) |
+|--------|------|-------------|---------------------|
+| `POST` | `/v1/rider/requests` | **`pickup_lat`**, **`pickup_lng`**; optional **`client_request_id`** | `{ "request_id": "<uuid>" }` |
+| `POST` | `/v1/rider/requests/:id/destination` | **`drop_lat`**, **`drop_lng`**; optional **`drop_name`** | `{ "ok": true, "estimated_price": <int> }` |
+| `POST` | `/v1/rider/requests/:id/confirm` | `{}` | `{ "ok": true }` |
+
+**Errors:** JSON **`{ "error": { "code", "message" } }`**. Typical codes: **`invalid_token`** (**401**); **`legal_required`**, **`phone_required`**, **`abuse_blocked`** (**403**); **`duplicate_pending`** or **`conflict`** (**409**); **`not_found`** (**404**).
 
 ### Legal (Mini App)
 

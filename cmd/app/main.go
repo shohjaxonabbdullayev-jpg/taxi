@@ -93,6 +93,7 @@ func main() {
 	riderAuthSessionsRepo := repositories.NewRiderAuthSessionsRepo(database)
 	riderAuthTokens := services.NewRiderAuthTokenService(riderAuthSessionsRepo, cfg.RiderBotToken)
 	riderAuthSvc := services.NewRiderAuthService(database, riderLoginCodesRepo, riderAuthTokens, riderBot, services.RiderAuthConfig{})
+	riderReqAppSvc := services.NewRiderRequestAppService(database, cfg, matchSvc)
 	tripSvc.OnDriverStatusUpdate = func(telegramID int64) {
 		driverbot.UpdatePinnedStatusForChat(driverBot, database, cfg, telegramID)
 	}
@@ -119,7 +120,7 @@ func main() {
 	go services.RunDriverAppAutoOfflineWorker(ctx, database)
 	go driverbot.RunLegalReacceptNotifier(ctx, database, driverBot)
 
-	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc, riderAuthSvc)
+	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc, riderAuthSvc, riderReqAppSvc)
 	httpServer := &http.Server{Addr: cfg.APIAddr, Handler: srv}
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

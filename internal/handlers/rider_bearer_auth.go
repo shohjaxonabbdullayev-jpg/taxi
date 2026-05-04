@@ -1,0 +1,66 @@
+package handlers
+
+import (
+	"database/sql"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+
+	"taxi-mvp/internal/auth"
+	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/services"
+)
+
+// RequireRiderBearerAuth validates Authorization: Bearer <access_token> from
+// the native rider auth flow (/v1/rider/auth/verify-code) and attaches
+// auth.User with RoleRider and UserID. TelegramUserID is left 0 (not used by
+// these handlers).
+func RequireRiderBearerAuth(svc *services.RiderAuthService, db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if svc == nil || db == nil {
+			writeRiderAPIError(c, http.StatusServiceUnavailable, "service_unavailable", "Xizmat vaqtincha ishlamayapti.")
+			c.Abort()
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+		if token == "" {
+			writeRiderAPIError(c, http.StatusUnauthorized, "invalid_token", "Kirish talab qilinadi. Qaytadan tizimga kiring.")
+			c.Abort()
+			return
+		}
+		userID, err := svc.VerifyAccessToken(token)
+		if err != nil || userID <= 0 {
+			writeRiderAPIError(c, http.StatusUnauthorized, "invalid_token", "Sessiya muddati tugagan yoki token noto‘g‘ri. Qaytadan tizimga kiring.")
+			c.Abort()
+			return
+		}
+		var role string
+		if err := db.QueryRowContext(c.Request.Context(), `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
+			if err == sql.ErrNoRows {
+				writeRiderAPIError(c, http.StatusForbidden, "forbidden", "Foydalanuvchi topilmadi.")
+				c.Abort()
+				return
+			}
+			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
+			c.Abort()
+			return
+		}
+		if strings.TrimSpace(role) != domain.RoleRider {
+			writeRiderAPIError(c, http.StatusForbidden, "forbidden", "Bu amal faqat yo‘lovchilar uchun.")
+			c.Abort()
+			return
+		}
+		c.Request = c.Request.WithContext(auth.WithUser(c.Request.Context(), &auth.User{
+			UserID:         userID,
+			TelegramUserID: 0,
+			Role:           domain.RoleRider,
+		}))
+		c.Next()
+	}
+}
+
+// writeRiderAPIError writes { "error": { "code", "message" } } for v1 rider routes.
+func writeRiderAPIError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
+}
