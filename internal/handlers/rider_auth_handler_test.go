@@ -95,17 +95,21 @@ func decodeErrEnvelope(t *testing.T, rr *httptest.ResponseRecorder) (string, str
 	return env.Error.Code, env.Error.Message
 }
 
-func TestRiderAuth_RequestCode_PhoneNotRegistered_404(t *testing.T) {
-	db := setupRiderAuthHandlerDB(t, "rider_auth_h_404")
+// TestRiderAuth_RequestCode_UnknownPhone_TelegramNotLinked checks that an
+// unknown phone is reported as telegram_not_linked (per the spec we deliberately
+// do NOT distinguish "no users row" from "users row but telegram_id is null"
+// at the HTTP layer — the rider app shows one clear instruction).
+func TestRiderAuth_RequestCode_UnknownPhone_TelegramNotLinked(t *testing.T) {
+	db := setupRiderAuthHandlerDB(t, "rider_auth_h_unknown_phone")
 	defer db.Close()
 	r, _ := newRiderAuthHandlerEngine(t, db)
 
 	rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901111111"}, nil)
-	if rr.Code != http.StatusNotFound {
+	if rr.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	code, _ := decodeErrEnvelope(t, rr)
-	if code != "phone_not_registered" {
+	if code != "telegram_not_linked" {
 		t.Fatalf("code=%q body=%s", code, rr.Body.String())
 	}
 }

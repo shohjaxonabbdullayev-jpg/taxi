@@ -210,19 +210,29 @@ func (s *RiderAuthService) RequestCode(ctx context.Context, rawPhone string) (*R
 		return nil, ErrRiderAuthInternal
 	}
 
-	switch riderbot.SendLoginCode(s.bot, tgID, code) {
+	outcome, sendErr := riderbot.SendLoginCode(s.bot, tgID, code)
+	switch outcome {
 	case riderbot.LoginCodeSent:
 		s.logOutcome("code_sent", phone, uid, tgID, 0, "")
 		return &RequestCodeResult{UserID: uid, TelegramID: tgID}, nil
 	case riderbot.LoginCodeBotBlocked:
 		_ = s.codes.MarkConsumed(ctx, rowID)
-		s.logOutcome("bot_blocked", phone, uid, tgID, 0, "")
+		s.logOutcome("bot_blocked", phone, uid, tgID, 0, fmt.Sprintf("tg_err=%q", errMsgOf(sendErr)))
 		return nil, ErrRiderAuthBotBlocked
 	default:
 		_ = s.codes.MarkConsumed(ctx, rowID)
-		s.logOutcome("send_failed", phone, uid, tgID, 0, "")
+		s.logOutcome("send_failed", phone, uid, tgID, 0, fmt.Sprintf("tg_err=%q", errMsgOf(sendErr)))
 		return nil, ErrRiderAuthSendFailed
 	}
+}
+
+// errMsgOf returns err.Error() or "<nil>" so that audit logs always have a
+// printable string for the tg_err field.
+func errMsgOf(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
 }
 
 // VerifyCode implements POST /v1/rider/auth/verify-code. On success it

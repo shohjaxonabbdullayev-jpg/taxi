@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -71,8 +72,16 @@ type riderAuthRefreshBody struct {
 
 func riderAuthRequestCode(svc *services.RiderAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Eager entry log — fires BEFORE body parse / DB lookup / bot send so
+		// that "is the request even reaching this handler?" can be answered
+		// from a single Render deploy log line. We never log the raw phone or
+		// any future OTP — only a length and a client-ip hint.
+		log.Printf("rider_auth http=request-code status=received body_len=%d ip=%s",
+			c.Request.ContentLength, c.ClientIP())
+
 		var body riderAuthRequestCodeBody
 		if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Phone) == "" {
+			log.Printf("rider_auth http=request-code status=rejected reason=invalid_phone")
 			writeRiderAuthError(c, http.StatusBadRequest, "invalid_phone",
 				"Telefon raqami noto‘g‘ri. Iltimos, +998XXXXXXXXX ko‘rinishida kiriting.")
 			return
@@ -88,8 +97,12 @@ func riderAuthRequestCode(svc *services.RiderAuthService) gin.HandlerFunc {
 
 func riderAuthVerifyCode(svc *services.RiderAuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		log.Printf("rider_auth http=verify-code status=received body_len=%d ip=%s",
+			c.Request.ContentLength, c.ClientIP())
+
 		var body riderAuthVerifyCodeBody
 		if err := c.ShouldBindJSON(&body); err != nil {
+			log.Printf("rider_auth http=verify-code status=rejected reason=invalid_body")
 			writeRiderAuthError(c, http.StatusBadRequest, "invalid_body",
 				"Yuborilgan ma‘lumot noto‘g‘ri.")
 			return
@@ -176,12 +189,14 @@ func mapRiderAuthError(c *gin.Context, err error) {
 	case errors.Is(err, services.ErrRiderAuthInvalidPhone):
 		writeRiderAuthError(c, http.StatusBadRequest, "invalid_phone",
 			"Telefon raqami noto‘g‘ri. Iltimos, +998XXXXXXXXX ko‘rinishida kiriting.")
-	case errors.Is(err, services.ErrRiderAuthPhoneNotFound):
-		writeRiderAuthError(c, http.StatusNotFound, "phone_not_registered",
-			"Iltimos, avval Telegramdagi YettiQanot rider botiga /start bering.")
-	case errors.Is(err, services.ErrRiderAuthTelegramNotLink):
+	// "phone not in users" and "users row exists but telegram_id is null"
+	// both collapse to the same 409 telegram_not_linked. The rider app shows
+	// one clear instruction to the user and we don't reveal whether the
+	// phone is otherwise known to the system (per the spec).
+	case errors.Is(err, services.ErrRiderAuthPhoneNotFound),
+		errors.Is(err, services.ErrRiderAuthTelegramNotLink):
 		writeRiderAuthError(c, http.StatusConflict, "telegram_not_linked",
-			"Iltimos, YettiQanot rider botida telefon raqamingizni \"Контакт юбориш\" tugmasi orqali ulashing.")
+			"Iltimos, avval Telegramdagi YettiQanot rider botiga /start bering va kontakt yuboring.")
 	case errors.Is(err, services.ErrRiderAuthTooManyCodes):
 		writeRiderAuthError(c, http.StatusTooManyRequests, "too_many_codes",
 			"Juda ko‘p kod so‘rovi. 1 soatdan so‘ng qayta urinib ko‘ring.")

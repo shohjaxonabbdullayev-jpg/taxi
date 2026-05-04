@@ -60,34 +60,47 @@ func RenderLoginCodeMessage(code string) string {
 // 5xx). 403 ("bot was blocked by the user") is reported separately so the
 // caller can return a 409 to the rider app with an Uzbek hint.
 //
-// The plaintext code is held only in this function's stack frame and is
-// never logged here.
-func SendLoginCode(sender LoginCodeSender, telegramID int64, code string) LoginCodeSendOutcome {
+// Returns the outcome plus the underlying Telegram error (if any) so the
+// caller can include the description in its audit log. The plaintext code
+// is held only in this function's stack frame and is never logged here.
+func SendLoginCode(sender LoginCodeSender, telegramID int64, code string) (LoginCodeSendOutcome, error) {
 	if sender == nil || telegramID == 0 || code == "" {
-		return LoginCodeFailed
+		return LoginCodeFailed, errInvalidArgs
 	}
 	msg := tgbotapi.NewMessage(telegramID, RenderLoginCodeMessage(code))
 	msg.ParseMode = "HTML"
 	msg.DisableWebPagePreview = true
 
-	if _, err := sender.Send(msg); err != nil {
-		if isTelegramBotBlocked(err) {
-			return LoginCodeBotBlocked
-		}
-		if !isTelegramTransient(err) {
-			return LoginCodeFailed
-		}
-		// One short retry on transient 5xx / network errors, then fail.
-		time.Sleep(300 * time.Millisecond)
-		if _, err2 := sender.Send(msg); err2 != nil {
-			if isTelegramBotBlocked(err2) {
-				return LoginCodeBotBlocked
-			}
-			return LoginCodeFailed
-		}
+	_, err := sender.Send(msg)
+	if err == nil {
+		return LoginCodeSent, nil
 	}
-	return LoginCodeSent
+	if isTelegramBotBlocked(err) {
+		return LoginCodeBotBlocked, err
+	}
+	if !isTelegramTransient(err) {
+		return LoginCodeFailed, err
+	}
+	// One short retry on transient 5xx / network errors, then fail.
+	time.Sleep(300 * time.Millisecond)
+	_, err2 := sender.Send(msg)
+	if err2 == nil {
+		return LoginCodeSent, nil
+	}
+	if isTelegramBotBlocked(err2) {
+		return LoginCodeBotBlocked, err2
+	}
+	return LoginCodeFailed, err2
 }
+
+// errInvalidArgs is returned by SendLoginCode when sender / telegramID /
+// code are missing or zero. Kept as a package-level value so the service
+// log line can include a stable string instead of "<nil>".
+var errInvalidArgs = invalidArgsError{}
+
+type invalidArgsError struct{}
+
+func (invalidArgsError) Error() string { return "rider auth: invalid send args" }
 
 // isTelegramBotBlocked returns true if the Telegram API rejected the send
 // because the rider blocked the bot or never started a conversation.
