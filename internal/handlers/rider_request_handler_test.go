@@ -249,6 +249,40 @@ func TestRiderRequest_HappyPath_CreateDestinationConfirm(t *testing.T) {
 	}
 }
 
+func TestRiderRequest_CamelCaseBody_EstimatedPriceAlias(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_camel")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	rr := postJSON(r, "/v1/rider/requests", map[string]any{"pickupLat": 41.3, "pickupLng": 69.28}, h)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var createOut struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &createOut); err != nil || createOut.RequestID == "" {
+		t.Fatalf("decode create requestId: %v body=%s", err, rr.Body.String())
+	}
+
+	path := "/v1/rider/requests/" + createOut.RequestID + "/destination"
+	rr2 := postJSON(r, path, map[string]any{
+		"dropLat": 41.31, "dropLng": 69.29, "dropName": "Test",
+	}, h)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("destination status=%d body=%s", rr2.Code, rr2.Body.String())
+	}
+	var destOut struct {
+		OK             bool  `json:"ok"`
+		EstimatedPrice int64 `json:"estimatedPrice"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &destOut); err != nil || !destOut.OK || destOut.EstimatedPrice <= 0 {
+		t.Fatalf("destination body (camel estimatedPrice): %v %+v raw=%s", err, destOut, rr2.Body.String())
+	}
+}
+
 func TestRiderRequest_ConfirmBeforeDestination_409(t *testing.T) {
 	db := setupRiderRequestHandlerDB(t, "rider_req_confirm_early")
 	defer db.Close()

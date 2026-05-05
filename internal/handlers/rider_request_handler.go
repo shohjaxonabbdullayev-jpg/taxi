@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -33,6 +34,81 @@ type riderAppDestinationBody struct {
 	DropName string  `json:"drop_name"`
 }
 
+// floatFromRaw unmarshals the first present key in raw JSON object m.
+func floatFromRaw(m map[string]json.RawMessage, keys ...string) (v float64, ok bool, err error) {
+	for _, k := range keys {
+		if raw, found := m[k]; found {
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return 0, false, err
+			}
+			return v, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func stringFromRaw(m map[string]json.RawMessage, keys ...string) (s string, ok bool, err error) {
+	for _, k := range keys {
+		if raw, found := m[k]; found {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return "", false, err
+			}
+			return strings.TrimSpace(s), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func bindRiderCreateBody(c *gin.Context) (riderCreateRequestBody, error) {
+	var m map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&m); err != nil {
+		return riderCreateRequestBody{}, err
+	}
+	lat, latOK, err := floatFromRaw(m, "pickup_lat", "pickupLat")
+	if err != nil {
+		return riderCreateRequestBody{}, err
+	}
+	lng, lngOK, err := floatFromRaw(m, "pickup_lng", "pickupLng")
+	if err != nil {
+		return riderCreateRequestBody{}, err
+	}
+	if !latOK || !lngOK {
+		return riderCreateRequestBody{}, errors.New("missing pickup coordinates")
+	}
+	var clientID string
+	if s, ok, err := stringFromRaw(m, "client_request_id", "clientRequestId"); err != nil {
+		return riderCreateRequestBody{}, err
+	} else if ok {
+		clientID = s
+	}
+	return riderCreateRequestBody{PickupLat: lat, PickupLng: lng, ClientRequestID: clientID}, nil
+}
+
+func bindRiderDestinationBody(c *gin.Context) (riderAppDestinationBody, error) {
+	var m map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&m); err != nil {
+		return riderAppDestinationBody{}, err
+	}
+	lat, latOK, err := floatFromRaw(m, "drop_lat", "dropLat")
+	if err != nil {
+		return riderAppDestinationBody{}, err
+	}
+	lng, lngOK, err := floatFromRaw(m, "drop_lng", "dropLng")
+	if err != nil {
+		return riderAppDestinationBody{}, err
+	}
+	if !latOK || !lngOK {
+		return riderAppDestinationBody{}, errors.New("missing drop coordinates")
+	}
+	var name string
+	if s, ok, err := stringFromRaw(m, "drop_name", "dropName"); err != nil {
+		return riderAppDestinationBody{}, err
+	} else if ok {
+		name = s
+	}
+	return riderAppDestinationBody{DropLat: lat, DropLng: lng, DropName: name}, nil
+}
+
 // RegisterRiderRequestRoutes mounts Bearer-authenticated ride request routes
 // under /v1/rider/requests* (same DB + dispatch path as Telegram rider bot).
 func RegisterRiderRequestRoutes(r *gin.Engine, deps RiderRequestDeps) {
@@ -62,8 +138,8 @@ func riderAppCreateRequest(deps RiderRequestDeps) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body riderCreateRequestBody
-		if err := c.ShouldBindJSON(&body); err != nil {
+		body, err := bindRiderCreateBody(c)
+		if err != nil {
 			writeRiderAPIError(c, http.StatusBadRequest, "invalid_body", "Yuborilgan ma‘lumot noto‘g‘ri.")
 			return
 		}
@@ -72,7 +148,7 @@ func riderAppCreateRequest(deps RiderRequestDeps) gin.HandlerFunc {
 			mapRiderRequestError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"request_id": reqID})
+		c.JSON(http.StatusOK, gin.H{"request_id": reqID, "requestId": reqID})
 	}
 }
 
@@ -83,8 +159,8 @@ func riderAppSetDestination(deps RiderRequestDeps) gin.HandlerFunc {
 			return
 		}
 		id := strings.TrimSpace(c.Param("id"))
-		var body riderAppDestinationBody
-		if err := c.ShouldBindJSON(&body); err != nil {
+		body, err := bindRiderDestinationBody(c)
+		if err != nil {
 			writeRiderAPIError(c, http.StatusBadRequest, "invalid_body", "Yuborilgan ma‘lumot noto‘g‘ri.")
 			return
 		}
@@ -93,7 +169,11 @@ func riderAppSetDestination(deps RiderRequestDeps) gin.HandlerFunc {
 			mapRiderRequestError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "estimated_price": est})
+		c.JSON(http.StatusOK, gin.H{
+			"ok":               true,
+			"estimated_price":  est,
+			"estimatedPrice":   est,
+		})
 	}
 }
 

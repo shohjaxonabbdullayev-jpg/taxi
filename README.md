@@ -181,8 +181,8 @@ Use the **same API origin** as the rest of the backend (e.g. Render). Auth respo
 
 | Method | Path | Body (JSON) | Success (examples) |
 |--------|------|-------------|---------------------|
-| `POST` | `/v1/rider/requests` | **`pickup_lat`**, **`pickup_lng`**; optional **`client_request_id`** | `{ "request_id": "<uuid>" }` |
-| `POST` | `/v1/rider/requests/:id/destination` | **`drop_lat`**, **`drop_lng`**; optional **`drop_name`** | `{ "ok": true, "estimated_price": <int> }` |
+| `POST` | `/v1/rider/requests` | **`pickup_lat`**, **`pickup_lng`** (or camelCase **`pickupLat`**, **`pickupLng`**); optional **`client_request_id`** / **`clientRequestId`** | **`request_id`** and duplicate **`requestId`** |
+| `POST` | `/v1/rider/requests/:id/destination` | **`drop_lat`**, **`drop_lng`** (or **`dropLat`**, **`dropLng`**); optional **`drop_name`** / **`dropName`** | **`estimated_price`** and duplicate **`estimatedPrice`** (same integer) |
 | `POST` | `/v1/rider/requests/:id/confirm` | `{}` | `{ "ok": true }` |
 
 **Errors:** JSON **`{ "error": { "code", "message" } }`**. Typical codes: **`invalid_token`** (**401**); **`legal_required`**, **`phone_required`**, **`abuse_blocked`** (**403**); **`duplicate_pending`** or **`conflict`** (**409**); **`not_found`** (**404**).
