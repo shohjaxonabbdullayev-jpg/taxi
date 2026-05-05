@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -55,6 +56,20 @@ func RegisterRiderAuthRoutes(r *gin.Engine, deps RiderAuthDeps) {
 	g.POST("/verify-code", riderAuthVerifyCode(deps.Service))
 	g.POST("/refresh", riderAuthRefresh(deps.Service))
 	g.POST("/logout", riderAuthLogout(deps.Service))
+}
+
+// RegisterRiderAppLegalRoutes mounts legal document fetch + accept for the
+// native rider app (Authorization: Bearer access_token). Response bodies match
+// GET /legal/active and POST /legal/accept (Mini App / Telegram initData).
+func RegisterRiderAppLegalRoutes(r *gin.Engine, db *sql.DB, riderAuthSvc *services.RiderAuthService) {
+	if r == nil || db == nil || riderAuthSvc == nil {
+		return
+	}
+	bearer := RequireRiderBearerAuth(riderAuthSvc, db)
+	g := r.Group("/v1/rider/legal")
+	g.Use(bearer)
+	g.GET("/active", LegalActiveDocuments(db))
+	g.POST("/accept", LegalAccept(db))
 }
 
 type riderAuthRequestCodeBody struct {

@@ -170,6 +170,13 @@ Use the **same API origin** as the rest of the backend (e.g. Render). Auth respo
 | `POST` | `/v1/rider/auth/refresh` | `{ "refresh_token" }` | Rotates tokens |
 | `POST` | `/v1/rider/auth/logout` | (empty JSON ok) | Header **`Authorization: Bearer <access_token>`** |
 
+**Legal (native rider app)** — same documents as Mini App **`/legal/*`**, but use the stored **`access_token`** (Telegram **`init_data`** is not available in Flutter).
+
+| Method | Path | Notes |
+|--------|------|--------|
+| `GET` | `/v1/rider/legal/active` | Header **`Authorization: Bearer <access_token>`**. JSON **`{ "documents": [ { "document_type", "version", "content" }, ... ] }`**. Riders receive **`user_terms`** and **`privacy_policy_user`**. |
+| `POST` | `/v1/rider/legal/accept` | Same auth; body **`{}`** ok; records acceptance of active versions. |
+
 **Ride requests** — on every call below, set **`Authorization: Bearer <access_token>`**. Lifecycle matches the Telegram rider bot: **`PENDING`** pickup row → destination + server **`estimated_price`** → **`destination_confirmed`** + **`MatchService.BroadcastRequest`** (same driver notification path as bot confirm). The server **never** trusts a client-supplied fare; only **`estimated_price`** from step 2 is stored.
 
 | Method | Path | Body (JSON) | Success (examples) |
