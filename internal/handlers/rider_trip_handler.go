@@ -31,6 +31,9 @@ func RegisterRiderTripRoutes(r *gin.Engine, deps RiderTripDeps) {
 	g := r.Group("/v1/rider")
 	g.Use(bearer)
 
+	// Discover current active trip (after driver accepts/dispatch assigns a trip).
+	g.GET("/trips/active", riderAppGetActiveTrip(deps))
+
 	// Preferred: no body, trip id in path.
 	g.POST("/trips/:id/cancel", riderAppCancelTripByPath(deps))
 	// Convenience: body { "trip_id": "..." }.
@@ -39,6 +42,41 @@ func RegisterRiderTripRoutes(r *gin.Engine, deps RiderTripDeps) {
 
 type riderTripCancelBody struct {
 	TripID string `json:"trip_id"`
+}
+
+func riderAppGetActiveTrip(deps RiderTripDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := riderUserID(c)
+		if !ok {
+			return
+		}
+		ctx := c.Request.Context()
+
+		// "Active trip" matches the rest of the backend: WAITING / ARRIVED / STARTED.
+		var tripID, status string
+		err := deps.DB.QueryRowContext(ctx, `
+			SELECT id, status
+			FROM trips
+			WHERE rider_user_id = ?1
+			  AND status IN ('WAITING','ARRIVED','STARTED')
+			ORDER BY rowid DESC
+			LIMIT 1
+		`, uid).Scan(&tripID, &status)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				c.JSON(http.StatusOK, gin.H{"trip": nil})
+				return
+			}
+			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"trip": gin.H{
+				"id":     tripID,
+				"status": status,
+			},
+		})
+	}
 }
 
 func riderAppCancelTripByPath(deps RiderTripDeps) gin.HandlerFunc {
