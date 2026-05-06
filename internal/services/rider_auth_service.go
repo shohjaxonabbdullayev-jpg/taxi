@@ -63,9 +63,11 @@ type RiderAuthConfig struct {
 func DefaultRiderAuthConfig() RiderAuthConfig {
 	return RiderAuthConfig{
 		CodeTTL:              5 * time.Minute,
-		PerPhoneCooldown:     60 * time.Second,
-		PerPhoneHourlyMax:    5,
-		PerPhoneHourlyWindow: time.Hour,
+		// Rate limiting disabled by default (native app may handle UX-side retries).
+		// Set these explicitly in NewRiderAuthService if you want throttling.
+		PerPhoneCooldown:     0,
+		PerPhoneHourlyMax:    0,
+		PerPhoneHourlyWindow: 0,
 		MaxAttempts:          5,
 	}
 }
@@ -94,15 +96,7 @@ func NewRiderAuthService(db *sql.DB, codes *repositories.RiderLoginCodesRepo, to
 	if cfg.CodeTTL == 0 {
 		cfg.CodeTTL = def.CodeTTL
 	}
-	if cfg.PerPhoneCooldown == 0 {
-		cfg.PerPhoneCooldown = def.PerPhoneCooldown
-	}
-	if cfg.PerPhoneHourlyMax == 0 {
-		cfg.PerPhoneHourlyMax = def.PerPhoneHourlyMax
-	}
-	if cfg.PerPhoneHourlyWindow == 0 {
-		cfg.PerPhoneHourlyWindow = def.PerPhoneHourlyWindow
-	}
+	// Per-phone throttles are intentionally NOT defaulted here. Zero means disabled.
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = def.MaxAttempts
 	}
@@ -160,31 +154,33 @@ func (s *RiderAuthService) RequestCode(ctx context.Context, rawPhone string) (*R
 	}
 	now := s.now().UTC()
 
-	// 60-second per-phone cooldown.
-	last, err := s.codes.LastCreatedAtForPhone(ctx, phone)
-	if err != nil {
-		s.logOutcome("request_code_lookup_error", phone, uid, tgID, 0, "")
-		return nil, ErrRiderAuthInternal
-	}
-	if last > 0 {
-		elapsed := now.Sub(time.Unix(last, 0))
-		if elapsed < s.cfg.PerPhoneCooldown {
-			retry := s.cfg.PerPhoneCooldown - elapsed
-			s.logOutcome("code_recently_sent", phone, uid, tgID, 0, fmt.Sprintf("retry_after=%ds", int(retry.Seconds())))
-			return nil, &RiderAuthCodeRecentError{RetryAfter: retry}
+	// Optional rate limiting (disabled by default).
+	if s.cfg.PerPhoneCooldown > 0 {
+		last, err := s.codes.LastCreatedAtForPhone(ctx, phone)
+		if err != nil {
+			s.logOutcome("request_code_lookup_error", phone, uid, tgID, 0, "")
+			return nil, ErrRiderAuthInternal
+		}
+		if last > 0 {
+			elapsed := now.Sub(time.Unix(last, 0))
+			if elapsed < s.cfg.PerPhoneCooldown {
+				retry := s.cfg.PerPhoneCooldown - elapsed
+				s.logOutcome("code_recently_sent", phone, uid, tgID, 0, fmt.Sprintf("retry_after=%ds", int(retry.Seconds())))
+				return nil, &RiderAuthCodeRecentError{RetryAfter: retry}
+			}
 		}
 	}
-
-	// 5-per-hour cap.
-	since := now.Add(-s.cfg.PerPhoneHourlyWindow).Unix()
-	count, err := s.codes.CountSinceForPhone(ctx, phone, since)
-	if err != nil {
-		s.logOutcome("request_code_count_error", phone, uid, tgID, 0, "")
-		return nil, ErrRiderAuthInternal
-	}
-	if count >= s.cfg.PerPhoneHourlyMax {
-		s.logOutcome("too_many_codes", phone, uid, tgID, 0, fmt.Sprintf("hourly=%d", count))
-		return nil, ErrRiderAuthTooManyCodes
+	if s.cfg.PerPhoneHourlyMax > 0 && s.cfg.PerPhoneHourlyWindow > 0 {
+		since := now.Add(-s.cfg.PerPhoneHourlyWindow).Unix()
+		count, err := s.codes.CountSinceForPhone(ctx, phone, since)
+		if err != nil {
+			s.logOutcome("request_code_count_error", phone, uid, tgID, 0, "")
+			return nil, ErrRiderAuthInternal
+		}
+		if count >= s.cfg.PerPhoneHourlyMax {
+			s.logOutcome("too_many_codes", phone, uid, tgID, 0, fmt.Sprintf("hourly=%d", count))
+			return nil, ErrRiderAuthTooManyCodes
+		}
 	}
 
 	// Generate code + per-row salt, then store hash only.

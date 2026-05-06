@@ -147,7 +147,7 @@ func TestRiderAuth_RequestCode_TelegramNotLinked_409(t *testing.T) {
 	}
 }
 
-func TestRiderAuth_RequestCode_RateLimited_HasRetryAfterHeader(t *testing.T) {
+func TestRiderAuth_RequestCode_NoRateLimit_AllowsImmediateResend(t *testing.T) {
 	db := setupRiderAuthHandlerDB(t, "rider_auth_h_rl")
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
@@ -159,15 +159,8 @@ func TestRiderAuth_RequestCode_RateLimited_HasRetryAfterHeader(t *testing.T) {
 		t.Fatalf("first status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil)
-	if rr.Code != http.StatusTooManyRequests {
+	if rr.Code != http.StatusOK {
 		t.Fatalf("second status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	if got := rr.Header().Get("Retry-After"); got == "" {
-		t.Fatalf("missing Retry-After header")
-	}
-	code, _ := decodeErrEnvelope(t, rr)
-	if code != "code_recently_sent" {
-		t.Fatalf("code=%q", code)
 	}
 }
 
