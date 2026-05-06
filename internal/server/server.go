@@ -71,6 +71,11 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 			DB: db, Cfg: cfg, RiderAuthSvc: riderAuthSvc, RiderReqSvc: riderReqSvc,
 		})
 	}
+	if riderAuthSvc != nil && tripSvc != nil {
+		handlers.RegisterRiderTripRoutes(r, handlers.RiderTripDeps{
+			DB: db, RiderAuthSvc: riderAuthSvc, TripSvc: tripSvc,
+		})
+	}
 
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
 	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
