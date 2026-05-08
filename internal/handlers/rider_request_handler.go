@@ -20,6 +20,7 @@ type RiderRequestDeps struct {
 	Cfg          *config.Config
 	RiderAuthSvc *services.RiderAuthService
 	RiderReqSvc  *services.RiderRequestAppService
+	TripSvc      *services.TripService
 }
 
 type riderCreateRequestBody struct {
@@ -121,6 +122,9 @@ func RegisterRiderRequestRoutes(r *gin.Engine, deps RiderRequestDeps) {
 	g.POST("/requests", riderAppCreateRequest(deps))
 	g.POST("/requests/:id/destination", riderAppSetDestination(deps))
 	g.POST("/requests/:id/confirm", riderAppConfirmRequest(deps))
+	// Cancellation by request_id (native app, Bearer JWT). Used during the "waiting for driver" window.
+	g.POST("/requests/:id/cancel", riderAppCancelRequestByPath(deps))
+	g.POST("/requests/cancel", riderAppCancelRequestByBody(deps))
 }
 
 func riderUserID(c *gin.Context) (int64, bool) {
@@ -192,6 +196,61 @@ func riderAppConfirmRequest(deps RiderRequestDeps) gin.HandlerFunc {
 	}
 }
 
+type riderCancelRequestBody struct {
+	RequestID string `json:"request_id"`
+}
+
+func riderAppCancelRequestByPath(deps RiderRequestDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := riderUserID(c)
+		if !ok {
+			return
+		}
+		requestID := strings.TrimSpace(c.Param("id"))
+		if requestID == "" {
+			writeRiderAPIError(c, http.StatusBadRequest, "invalid_body", "Yuborilgan ma‘lumot noto‘g‘ri.")
+			return
+		}
+		riderAppCancelRequest(c, deps, uid, requestID)
+	}
+}
+
+func riderAppCancelRequestByBody(deps RiderRequestDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := riderUserID(c)
+		if !ok {
+			return
+		}
+		var m map[string]json.RawMessage
+		if err := c.ShouldBindJSON(&m); err != nil {
+			writeRiderAPIError(c, http.StatusBadRequest, "invalid_body", "Yuborilgan ma‘lumot noto‘g‘ri.")
+			return
+		}
+		id, okID, err := stringFromRaw(m, "request_id", "requestId")
+		if err != nil || !okID || strings.TrimSpace(id) == "" {
+			writeRiderAPIError(c, http.StatusBadRequest, "invalid_body", "Yuborilgan ma‘lumot noto‘g‘ri.")
+			return
+		}
+		riderAppCancelRequest(c, deps, uid, strings.TrimSpace(id))
+	}
+}
+
+func riderAppCancelRequest(c *gin.Context, deps RiderRequestDeps, riderUserID int64, requestID string) {
+	ctx := c.Request.Context()
+	out, err := deps.RiderReqSvc.CancelRequest(ctx, riderUserID, requestID, deps.TripSvc)
+	if err != nil {
+		// Cancel endpoint has stricter error codes required by the native app.
+		switch {
+		case errors.Is(err, services.ErrRiderRequestConflictState):
+			writeRiderAPIError(c, http.StatusConflict, "invalid_state", "So‘rov holati noto‘g‘ri yoki muddati tugagan.")
+		default:
+			mapRiderRequestError(c, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func mapRiderRequestError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, services.ErrRiderRequestLegalRequired):
@@ -204,6 +263,8 @@ func mapRiderRequestError(c *gin.Context, err error) {
 		writeRiderAPIError(c, http.StatusConflict, "duplicate_pending", "Sizda allaqachon faol so‘rov bor. Haydovchi topilguncha yoki bekor qilinguncha kuting.")
 	case errors.Is(err, services.ErrRiderRequestNotFound):
 		writeRiderAPIError(c, http.StatusNotFound, "not_found", "So‘rov topilmadi.")
+	case errors.Is(err, services.ErrRiderRequestNotYours):
+		writeRiderAPIError(c, http.StatusForbidden, "not_your_request", "So‘rov sizga tegishli emas.")
 	case errors.Is(err, services.ErrRiderRequestConflictState):
 		writeRiderAPIError(c, http.StatusConflict, "conflict", "So‘rov holati noto‘g‘ri yoki muddati tugagan.")
 	case errors.Is(err, services.ErrRiderRequestInvalidCoords):

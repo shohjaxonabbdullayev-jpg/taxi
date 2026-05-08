@@ -67,6 +67,26 @@ func setupRiderRequestHandlerDB(t *testing.T, name string) *sql.DB {
 		pickup_grid TEXT,
 		radius_expanded_at TEXT
 	)`)
+	exec(`CREATE TABLE request_notifications (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		request_id TEXT NOT NULL,
+		driver_user_id INTEGER NOT NULL,
+		chat_id INTEGER NOT NULL,
+		message_id INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'SENT',
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`)
+	exec(`CREATE TABLE trips (
+		id TEXT PRIMARY KEY,
+		request_id TEXT UNIQUE NOT NULL,
+		driver_user_id INTEGER NOT NULL,
+		rider_user_id INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT,
+		distance_m INTEGER NOT NULL DEFAULT 0,
+		fare_amount INTEGER NOT NULL DEFAULT 0
+	)`)
 	exec(`CREATE TABLE rider_login_codes (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		phone      TEXT NOT NULL,
@@ -325,5 +345,85 @@ func TestRiderRequest_LegalRequired_403(t *testing.T) {
 	code, _ := decodeRiderRequestErr(t, rr)
 	if code != "legal_required" {
 		t.Fatalf("code=%q", code)
+	}
+}
+
+func TestRiderRequest_CancelPending_ByPathAndBody_Idempotent(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_cancel_pending")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	// Create request.
+	rr := postJSON(r, "/v1/rider/requests", map[string]any{"pickup_lat": 41.3, "pickup_lng": 69.28}, h)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var createOut struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &createOut); err != nil || createOut.RequestID == "" {
+		t.Fatalf("decode create: %v body=%s", err, rr.Body.String())
+	}
+
+	// Cancel by path.
+	path := "/v1/rider/requests/" + createOut.RequestID + "/cancel"
+	rr2 := postJSON(r, path, map[string]any{}, h)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("cancel path status=%d body=%s", rr2.Code, rr2.Body.String())
+	}
+	var out1 struct {
+		OK        bool   `json:"ok"`
+		RequestID string `json:"request_id"`
+		TripID    any    `json:"trip_id"`
+		Status    string `json:"status"`
+		Result    string `json:"result"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &out1); err != nil {
+		t.Fatalf("decode cancel path: %v body=%s", err, rr2.Body.String())
+	}
+	if !out1.OK || out1.RequestID != createOut.RequestID || out1.Status != domain.RequestStatusCancelled || out1.Result != "updated" {
+		t.Fatalf("unexpected cancel response: %+v raw=%s", out1, rr2.Body.String())
+	}
+
+	// Cancel again by body => noop.
+	rr3 := postJSON(r, "/v1/rider/requests/cancel", map[string]any{"request_id": createOut.RequestID}, h)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("cancel body status=%d body=%s", rr3.Code, rr3.Body.String())
+	}
+	var out2 struct {
+		OK     bool   `json:"ok"`
+		Status string `json:"status"`
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(rr3.Body.Bytes(), &out2); err != nil {
+		t.Fatalf("decode cancel body: %v body=%s", err, rr3.Body.String())
+	}
+	if !out2.OK || out2.Status != domain.RequestStatusCancelled || out2.Result != "noop" {
+		t.Fatalf("unexpected cancel body noop: %+v raw=%s", out2, rr3.Body.String())
+	}
+}
+
+func TestRiderRequest_Cancel_NotYourRequest_403(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_cancel_not_yours")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	seedRiderLegalAndUser(t, db, 2)
+	// Seed a pending request for user 2.
+	if _, err := db.Exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, radius_km, status, expires_at)
+		VALUES ('req-2', 2, 41.3, 69.28, 3, ?1, datetime('now','+1 hour'))`, domain.RequestStatusPending); err != nil {
+		t.Fatal(err)
+	}
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	rr := postJSON(r, "/v1/rider/requests/req-2/cancel", map[string]any{}, h)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	code, _ := decodeRiderRequestErr(t, rr)
+	if code != "not_your_request" {
+		t.Fatalf("code=%q body=%s", code, rr.Body.String())
 	}
 }
