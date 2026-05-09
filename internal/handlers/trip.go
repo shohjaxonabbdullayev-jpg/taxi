@@ -3,7 +3,9 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"taxi-mvp/internal/auth"
@@ -79,6 +81,38 @@ type LatLng struct {
 	Lng float64 `json:"lng"`
 }
 
+// DriverCar is the canonical nested car object for the rider app.
+// Keep fields minimal and stable; clients accept aliases but this is the preferred shape.
+type DriverCar struct {
+	Make  string `json:"make,omitempty"`
+	Model string `json:"model,omitempty"`
+	Color string `json:"color,omitempty"`
+	Plate string `json:"plate,omitempty"`
+}
+
+// DriverLocationObject is the canonical nested location object for the rider app.
+// Name avoids collision with handlers.DriverLocation HTTP handler.
+type DriverLocationObject struct {
+	Lat     float64 `json:"lat"`
+	Lng     float64 `json:"lng"`
+	Heading *int    `json:"heading,omitempty"`
+}
+
+// DriverObject is the canonical driver object for rider app /trip polling.
+// It intentionally includes lat/lng at top-level as an alias to keep older clients working.
+type DriverObject struct {
+	ID       string         `json:"id"`
+	Name     string         `json:"name,omitempty"`
+	Phone    string         `json:"phone,omitempty"`
+	Rating   *float64       `json:"rating,omitempty"`
+	PhotoURL string         `json:"photo_url,omitempty"`
+	Car      *DriverCar     `json:"car,omitempty"`
+	Location *DriverLocationObject `json:"location,omitempty"`
+	Lat      *float64       `json:"lat,omitempty"`
+	Lng      *float64       `json:"lng,omitempty"`
+	Heading  *int           `json:"heading,omitempty"`
+}
+
 // TripSummary is the standardized trip object for resync (nested in GET /trip/:id; rider and driver Mini App).
 type TripSummary struct {
 	ID         string  `json:"id"`     // trip id (string; e.g. UUID)
@@ -92,12 +126,18 @@ type TripSummary struct {
 // TripInfoResponse is returned by GET /trip/:id for Mini App (rider: track driver; driver: run trip).
 // Rider-friendly: trip, pickup, drop, driver as objects; driver_info for display.
 type TripInfoResponse struct {
+	// New canonical fields (native rider app).
+	ID     string        `json:"id"`
+	Driver *DriverObject `json:"driver,omitempty"`
+
+	// Legacy fields kept for compatibility (Telegram mini app + older clients).
 	TripID     string       `json:"trip_id"`
 	DriverID   int64        `json:"driver_id,omitempty"`
 	Status     string       `json:"status"`
 	Pickup     LatLng       `json:"pickup"` // { lat, lng } for rider/driver map
 	Drop       LatLng       `json:"drop"`   // { lat, lng }
-	Driver     LatLng       `json:"driver"` // { lat, lng } from drivers.last_lat/lng
+	DriverLegacy LatLng     `json:"driver"` // legacy alias for driver position (older clients)
+	DriverPos  LatLng       `json:"driver_pos"` // { lat, lng } from drivers.last_lat/lng (alias when driver is object)
 	DistanceKm float64      `json:"distance_km"`
 	Fare       int64        `json:"fare"`
 	Trip       *TripSummary `json:"trip,omitempty"`
@@ -298,16 +338,17 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 		ctx := c.Request.Context()
 		var pickupLat, pickupLng, dropLat, dropLng sql.NullFloat64
 		var driverUserID, riderUserID int64
+		var assignedDriverUserID sql.NullInt64
 		var status string
 		var distanceM int64
 		var fareAmount sql.NullInt64
 		// Single SELECT: distance_m and fare_amount are the source of truth (live for STARTED, final for FINISHED).
 		err := db.QueryRowContext(ctx, `
-			SELECT t.status, t.driver_user_id, t.rider_user_id, t.distance_m, t.fare_amount,
+			SELECT t.status, t.driver_user_id, r.assigned_driver_user_id, t.rider_user_id, t.distance_m, t.fare_amount,
 			       r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng
 			FROM trips t
 			JOIN ride_requests r ON r.id = t.request_id
-			WHERE t.id = ?1`, tripID).Scan(&status, &driverUserID, &riderUserID, &distanceM, &fareAmount, &pickupLat, &pickupLng, &dropLat, &dropLng)
+			WHERE t.id = ?1`, tripID).Scan(&status, &driverUserID, &assignedDriverUserID, &riderUserID, &distanceM, &fareAmount, &pickupLat, &pickupLng, &dropLat, &dropLng)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				c.JSON(http.StatusNotFound, gin.H{"error": "trip not found"})
@@ -317,16 +358,113 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			return
 		}
 		pickup := LatLng{pickupLat.Float64, pickupLng.Float64}
-		drop := LatLng{pickupLat.Float64, pickupLng.Float64}
+		drop := LatLng{0, 0}
 		if dropLat.Valid && dropLng.Valid {
 			drop = LatLng{dropLat.Float64, dropLng.Float64}
 		}
-		var driverLat, driverLng sql.NullFloat64
+		// Effective driver id: normally trips.driver_user_id, but fall back to ride_requests.assigned_driver_user_id
+		// to guard against rare inconsistent snapshots where status becomes WAITING but trips.driver_user_id is not yet populated.
+		effectiveDriverUserID := driverUserID
+		if effectiveDriverUserID == 0 && assignedDriverUserID.Valid && assignedDriverUserID.Int64 > 0 {
+			effectiveDriverUserID = assignedDriverUserID.Int64
+		}
+
+		// Driver fields (best-effort, backward compatible with older DBs).
 		var driverPhone, driverCarType, driverColor, driverPlate sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT last_lat, last_lng, phone, car_type, color, plate FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&driverLat, &driverLng, &driverPhone, &driverCarType, &driverColor, &driverPlate)
-		driver := LatLng{0, 0}
-		if driverLat.Valid && driverLng.Valid {
-			driver = LatLng{driverLat.Float64, driverLng.Float64}
+		var driverFirstName, driverLastName, driverPlateNumber sql.NullString
+		var lastLat, lastLng sql.NullFloat64
+		var appLat, appLng sql.NullFloat64
+		var appLast sql.NullString
+		var appActive sql.NullInt64
+
+		if effectiveDriverUserID != 0 {
+			// Newer schema (preferred): includes app_* columns for native driver app GPS.
+			qNew := `
+				SELECT last_lat, last_lng, phone, car_type, color, plate, first_name, last_name, plate_number,
+				       app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
+				FROM drivers WHERE user_id = ?1`
+			qLegacy := `
+				SELECT last_lat, last_lng, phone, car_type, color, plate, first_name, last_name, plate_number
+				FROM drivers WHERE user_id = ?1`
+			rowErr := db.QueryRowContext(ctx, qNew, effectiveDriverUserID).
+				Scan(&lastLat, &lastLng, &driverPhone, &driverCarType, &driverColor, &driverPlate, &driverFirstName, &driverLastName, &driverPlateNumber, &appLat, &appLng, &appLast, &appActive)
+			if rowErr != nil && strings.Contains(strings.ToLower(rowErr.Error()), "no such column") {
+				_ = db.QueryRowContext(ctx, qLegacy, effectiveDriverUserID).
+					Scan(&lastLat, &lastLng, &driverPhone, &driverCarType, &driverColor, &driverPlate, &driverFirstName, &driverLastName, &driverPlateNumber)
+				appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
+				appLast = sql.NullString{}
+				appActive = sql.NullInt64{Int64: 0, Valid: true}
+			}
+		}
+
+		driverPos := LatLng{0, 0}
+		if lastLat.Valid && lastLng.Valid {
+			driverPos = LatLng{lastLat.Float64, lastLng.Float64}
+		}
+
+		// Load driver display name from users as a fallback.
+		var driverUserName sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?1`, effectiveDriverUserID).Scan(&driverUserName)
+
+		// Fallback: if drivers.phone is empty, use users.phone (same behavior as Telegram rider assignment notification).
+		var driverUserPhone sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT phone FROM users WHERE id = ?1`, effectiveDriverUserID).Scan(&driverUserPhone)
+
+		driverObj := (*DriverObject)(nil)
+		if effectiveDriverUserID != 0 && (status == domain.TripStatusWaiting || status == domain.TripStatusArrived || status == domain.TripStatusStarted) {
+			name := strings.TrimSpace(driverUserName.String)
+			if driverFirstName.Valid || driverLastName.Valid {
+				fn := strings.TrimSpace(driverFirstName.String)
+				ln := strings.TrimSpace(driverLastName.String)
+				full := strings.TrimSpace(strings.TrimSpace(fn + " " + ln))
+				if full != "" {
+					name = full
+				}
+			}
+			plate := strings.TrimSpace(driverPlateNumber.String)
+			if plate == "" {
+				plate = strings.TrimSpace(driverPlate.String)
+			}
+			car := &DriverCar{
+				Make:  strings.TrimSpace(driverCarType.String),
+				Model: "",
+				Color: strings.TrimSpace(driverColor.String),
+				Plate: plate,
+			}
+
+			phone := strings.TrimSpace(driverPhone.String)
+			if phone == "" && driverUserPhone.Valid {
+				phone = strings.TrimSpace(driverUserPhone.String)
+			}
+
+			loc := (*DriverLocationObject)(nil)
+			// Prefer effective driver location (native app GPS if active+fresh), else Telegram last_lat/lng.
+			eLoc := services.EffectiveDriverLocation{
+				AppLat:            appLat,
+				AppLng:            appLng,
+				AppLastSeenAt:     appLast,
+				AppLocationActive: appActive,
+				LastLat:           lastLat,
+				LastLng:           lastLng,
+			}
+			eLat, eLng := services.GetEffectiveDriverLocation(eLoc)
+			var latPtr, lngPtr *float64
+			if eLat != 0 || eLng != 0 {
+				lat := eLat
+				lng := eLng
+				latPtr = &lat
+				lngPtr = &lng
+				loc = &DriverLocationObject{Lat: lat, Lng: lng}
+			}
+			driverObj = &DriverObject{
+				ID:       fmt.Sprintf("%d", effectiveDriverUserID),
+				Name:     name,
+				Phone:    phone,
+				Car:      car,
+				Location: loc,
+				Lat:      latPtr,
+				Lng:      lngPtr,
+			}
 		}
 		var riderPhone, riderName sql.NullString
 		_ = db.QueryRowContext(ctx, `SELECT phone, name FROM users WHERE id = ?1`, riderUserID).Scan(&riderPhone, &riderName)
@@ -340,12 +478,15 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 		}
 		fare, fareAmountPtr := TripFareForResponse(status, fareAmount, computedFare)
 		resp := TripInfoResponse{
+			ID:         tripID,
+			Driver:     driverObj,
 			TripID:     tripID,
-			DriverID:   driverUserID,
+			DriverID:   effectiveDriverUserID,
 			Status:     status,
 			Pickup:     pickup,
 			Drop:       drop,
-			Driver:     driver,
+			DriverLegacy: driverPos,
+			DriverPos:  driverPos,
 			DistanceKm: distanceKm,
 			Fare:       fare,
 			Trip: &TripSummary{
@@ -373,6 +514,10 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			}
 		}
 		if driverPhone.Valid && driverPhone.String != "" || driverCarType.Valid && driverCarType.String != "" || driverColor.Valid && driverColor.String != "" || driverPlate.Valid && driverPlate.String != "" {
+			plate := strings.TrimSpace(driverPlateNumber.String)
+			if plate == "" {
+				plate = strings.TrimSpace(driverPlate.String)
+			}
 			resp.DriverInfo = &struct {
 				Phone   string `json:"phone,omitempty"`
 				CarType string `json:"car_type,omitempty"`
@@ -382,7 +527,7 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 				Phone:   driverPhone.String,
 				CarType: driverCarType.String,
 				Color:   driverColor.String,
-				Plate:   driverPlate.String,
+				Plate:   plate,
 			}
 		}
 		c.JSON(http.StatusOK, resp)
