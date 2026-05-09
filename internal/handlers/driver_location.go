@@ -59,9 +59,10 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 		driverID := u.UserID
 		legalSvc := legal.NewService(db)
 		var activeTrip string
+		var activeTripStatus string
 		_ = db.QueryRowContext(ctx, `
-			SELECT id FROM trips WHERE driver_user_id = ?1 AND status IN ('WAITING','ARRIVED','STARTED') LIMIT 1`,
-			driverID).Scan(&activeTrip)
+			SELECT id, status FROM trips WHERE driver_user_id = ?1 AND status IN ('WAITING','ARRIVED','STARTED') LIMIT 1`,
+			driverID).Scan(&activeTrip, &activeTripStatus)
 		if activeTrip == "" && !legalSvc.DriverHasActiveLegal(ctx, driverID) {
 			c.JSON(http.StatusForbidden, gin.H{"error": legal.ErrCodeRequired})
 			return
@@ -91,6 +92,18 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 				UPDATE drivers SET last_lat = ?1, last_lng = ?2, last_seen_at = ?3, grid_id = ?4 WHERE user_id = ?5`,
 				req.Lat, req.Lng, nowStr, gridID, driverID)
 		}
+
+		// Rider app: broadcast compact driver_location events while dispatch is active (WAITING/ARRIVED/STARTED).
+		// Preferred over embedding driver payload in every status event; keeps frames small.
+		if hub != nil && activeTrip != "" {
+			payload := map[string]interface{}{"lat": req.Lat, "lng": req.Lng}
+			hub.BroadcastToTrip(activeTrip, ws.Event{
+				Type:       "driver_location",
+				TripStatus: activeTripStatus,
+				Payload:    payload,
+			})
+		}
+
 		var tripID string
 		var ignoredReason string
 		if tripSvc != nil {
