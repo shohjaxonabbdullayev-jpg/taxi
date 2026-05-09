@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,10 @@ func RegisterRiderTripRoutes(r *gin.Engine, deps RiderTripDeps) {
 	// Discover current active trip (after driver accepts/dispatch assigns a trip).
 	g.GET("/trips/active", riderAppGetActiveTrip(deps))
 
+	// Trip history: terminal trips for the authenticated rider (pagination).
+	// Query: limit (default 20, max 50), cursor (opaque: rowid of last item from previous page).
+	g.GET("/trips", riderAppListTrips(deps))
+
 	// Preferred: no body, trip id in path.
 	g.POST("/trips/:id/cancel", riderAppCancelTripByPath(deps))
 	// Convenience: body { "trip_id": "..." }.
@@ -42,6 +47,139 @@ func RegisterRiderTripRoutes(r *gin.Engine, deps RiderTripDeps) {
 
 type riderTripCancelBody struct {
 	TripID string `json:"trip_id"`
+}
+
+func riderAppListTrips(deps RiderTripDeps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := riderUserID(c)
+		if !ok {
+			return
+		}
+		ctx := c.Request.Context()
+
+		limit := 20
+		if s := strings.TrimSpace(c.Query("limit")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if limit > 50 {
+			limit = 50
+		}
+
+		var cursorRowid int64
+		if s := strings.TrimSpace(c.Query("cursor")); s != "" {
+			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
+				cursorRowid = v
+			}
+		}
+
+		// Fetch limit+1 to detect next page (SQLite rowid pagination).
+		fetch := limit + 1
+		var rows *sql.Rows
+		var err error
+		if cursorRowid > 0 {
+			rows, err = deps.DB.QueryContext(ctx, `
+				SELECT t.rowid, t.id, t.status, t.finished_at, t.cancelled_at, t.fare_amount, t.distance_m, t.request_id,
+				       r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng
+				FROM trips t
+				LEFT JOIN ride_requests r ON r.id = t.request_id
+				WHERE t.rider_user_id = ?1
+				  AND t.status IN ('FINISHED','CANCELLED','CANCELLED_BY_DRIVER','CANCELLED_BY_RIDER')
+				  AND t.rowid < ?2
+				ORDER BY t.rowid DESC
+				LIMIT ?3`, uid, cursorRowid, fetch)
+		} else {
+			rows, err = deps.DB.QueryContext(ctx, `
+				SELECT t.rowid, t.id, t.status, t.finished_at, t.cancelled_at, t.fare_amount, t.distance_m, t.request_id,
+				       r.pickup_lat, r.pickup_lng, r.drop_lat, r.drop_lng
+				FROM trips t
+				LEFT JOIN ride_requests r ON r.id = t.request_id
+				WHERE t.rider_user_id = ?1
+				  AND t.status IN ('FINISHED','CANCELLED','CANCELLED_BY_DRIVER','CANCELLED_BY_RIDER')
+				ORDER BY t.rowid DESC
+				LIMIT ?2`, uid, fetch)
+		}
+		if err != nil {
+			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
+			return
+		}
+		defer rows.Close()
+
+		type pickupDrop struct {
+			Lat float64 `json:"lat"`
+			Lng float64 `json:"lng"`
+		}
+		var out []gin.H
+		for rows.Next() {
+			var rowid int64
+			var id, status, requestID string
+			var finishedAt, cancelledAt sql.NullString
+			var fareAmount, distanceM int64
+			var pickupLat, pickupLng, dropLat, dropLng sql.NullFloat64
+			if err := rows.Scan(&rowid, &id, &status, &finishedAt, &cancelledAt, &fareAmount, &distanceM, &requestID,
+				&pickupLat, &pickupLng, &dropLat, &dropLng); err != nil {
+				writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
+				return
+			}
+			finStr, canStr := "", ""
+			if finishedAt.Valid {
+				finStr = finishedAt.String
+			}
+			if cancelledAt.Valid {
+				canStr = cancelledAt.String
+			}
+			item := gin.H{
+				"id":            id,
+				"trip_id":       id,
+				"tripId":        id,
+				"status":        status,
+				"request_id":    requestID,
+				"requestId":     requestID,
+				"fare_amount":   fareAmount,
+				"fareAmount":    fareAmount,
+				"distance_m":    distanceM,
+				"distanceM":     distanceM,
+				"finished_at":   finStr,
+				"finishedAt":    finStr,
+				"cancelled_at":  canStr,
+				"cancelledAt":   canStr,
+				"_rowid":        rowid, // internal; strip before return
+			}
+			if pickupLat.Valid && pickupLng.Valid {
+				p := pickupDrop{Lat: pickupLat.Float64, Lng: pickupLng.Float64}
+				item["pickup"] = p
+			}
+			if dropLat.Valid && dropLng.Valid {
+				d := pickupDrop{Lat: dropLat.Float64, Lng: dropLng.Float64}
+				item["drop"] = d
+			}
+			out = append(out, item)
+		}
+		if err := rows.Err(); err != nil {
+			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
+			return
+		}
+
+		var nextCursor interface{}
+		if len(out) > limit {
+			// Remove the extra row used to detect pagination.
+			last := out[limit-1]
+			out = out[:limit]
+			if rid, ok := last["_rowid"].(int64); ok {
+				nextCursor = strconv.FormatInt(rid, 10)
+			}
+		}
+		for i := range out {
+			delete(out[i], "_rowid")
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"trips":       out,
+			"next_cursor": nextCursor,
+			"nextCursor":  nextCursor,
+		})
+	}
 }
 
 func riderAppGetActiveTrip(deps RiderTripDeps) gin.HandlerFunc {

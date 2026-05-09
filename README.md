@@ -135,7 +135,7 @@ Native rider **login** and **ride requests** use **`/v1/rider/auth/...`** and **
 |--------|------|------|
 | `GET` / `HEAD` | `/health`, `/` | No |
 | `GET` | `/webapp/*` | Static files from `./webapp` |
-| `GET` | `/ws?trip_id=...` | Telegram initData (driver or rider on trip); **`X-Driver-Id`** when header mode is on (default unless env disables it) |
+| `GET` | `/ws?trip_id=...` | Telegram **`init_data`** (driver or rider on trip); native rider **JWT** via **`Authorization: Bearer`** or **`access_token`** query (Flutter web); **`X-Driver-Id`** when header mode is on (default unless env disables it) |
 
 ### Trip and driver (Mini App / bots)
 
@@ -184,6 +184,15 @@ Use the **same API origin** as the rest of the backend (e.g. Render). Auth respo
 | `POST` | `/v1/rider/requests` | **`pickup_lat`**, **`pickup_lng`** (or camelCase **`pickupLat`**, **`pickupLng`**); optional **`client_request_id`** / **`clientRequestId`** | **`request_id`** and duplicate **`requestId`** |
 | `POST` | `/v1/rider/requests/:id/destination` | **`drop_lat`**, **`drop_lng`** (or **`dropLat`**, **`dropLng`**); optional **`drop_name`** / **`dropName`** | **`estimated_price`** and duplicate **`estimatedPrice`** (same integer) |
 | `POST` | `/v1/rider/requests/:id/confirm` | `{}` | `{ "ok": true }` |
+
+**Trips (native rider app)** — same **`Authorization: Bearer <access_token>`**.
+
+| Method | Path | Query / body | Notes |
+|--------|------|----------------|------|
+| `GET` | `/v1/rider/trips/active` | — | Current trip if **`WAITING`**, **`ARRIVED`**, or **`STARTED`**; else **`{ "trip": null }`**. |
+| `GET` | `/v1/rider/trips` | **`limit`** (default 20, **max 50**); optional **`cursor`** from **`next_cursor`** / **`nextCursor`** | **Terminal trips only** for the authenticated rider: **`FINISHED`**, **`CANCELLED`**, **`CANCELLED_BY_DRIVER`**, **`CANCELLED_BY_RIDER`**. Response **`{ "trips": [ ... ], "next_cursor", "nextCursor" }`**. Each item includes **`id`** / **`trip_id`** / **`tripId`**, **`status`**, **`request_id`** / **`requestId`**, **`fare_amount`** / **`fareAmount`**, **`distance_m`** / **`distanceM`**, **`finished_at`** / **`finishedAt`**, **`cancelled_at`** / **`cancelledAt`**, and **`pickup`** / **`drop`** as **`{ "lat", "lng" }`** when present. |
+| `POST` | `/v1/rider/trips/:id/cancel` | — | Cancel active trip (same rules as **`POST /trip/cancel/rider`**). |
+| `POST` | `/v1/rider/trips/cancel` | **`{ "trip_id" }`** | Same as path variant. |
 
 **Errors:** JSON **`{ "error": { "code", "message" } }`**. Typical codes: **`invalid_token`** (**401**); **`legal_required`**, **`phone_required`**, **`abuse_blocked`** (**403**); **`duplicate_pending`** or **`conflict`** (**409**); **`not_found`** (**404**).
 
