@@ -13,7 +13,26 @@ import (
 	"taxi-mvp/internal/logger"
 )
 
+// RiderAccessTokenVerifier validates native rider access JWTs (same contract as
+// services.RiderAuthService.VerifyAccessToken). Passed from server to avoid an
+// import cycle (services imports ws for TripService broadcasts).
+type RiderAccessTokenVerifier interface {
+	VerifyAccessToken(token string) (int64, error)
+}
+
 const headerInitData = "X-Telegram-Init-Data"
+
+// riderAccessTokenFromRequest returns the native rider JWT from Authorization: Bearer
+// or from query access_token (browsers / Flutter web cannot set WS headers).
+// Header is checked first; same validation path for both.
+func riderAccessTokenFromRequest(r *http.Request) string {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	token := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	if token != "" {
+		return token
+	}
+	return strings.TrimSpace(r.URL.Query().Get("access_token"))
+}
 
 // ServeWs handles GET /ws?trip_id=xxx and upgrades to WebSocket (no auth). Use ServeWsWithAuth for protected WS.
 func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
@@ -39,7 +58,9 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 // ServeWsWithAuth requires Telegram Mini App auth; only rider or assigned driver of the trip may subscribe.
 // When enableDriverIDHeader is true and init data is absent, accepts header X-Driver-Id (internal driver user id) for drivers only.
-func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string, enableDriverIDHeader bool, w http.ResponseWriter, r *http.Request) {
+// When riderAuth is non-nil, also accepts the native rider access JWT via Authorization: Bearer or ?access_token=
+// (same verification as /v1/rider/* Bearer middleware) so Flutter web can subscribe without custom WS headers.
+func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string, enableDriverIDHeader bool, riderAuth RiderAccessTokenVerifier, w http.ResponseWriter, r *http.Request) {
 	tripID := strings.TrimSpace(r.URL.Query().Get("trip_id"))
 	if tripID == "" {
 		http.Error(w, "trip_id required", http.StatusBadRequest)
@@ -71,6 +92,31 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 			logger.AuthFailure("user not found")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":"user not found"}`))
+			return
+		}
+	} else if token := riderAccessTokenFromRequest(r); token != "" && riderAuth != nil {
+		var err error
+		userID, err = riderAuth.VerifyAccessToken(token)
+		if err != nil || userID <= 0 {
+			logger.AuthFailure("invalid rider access token")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"invalid token"}`))
+			return
+		}
+		if err := db.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
+			if err == sql.ErrNoRows {
+				logger.AuthFailure("user not found")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"user not found"}`))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(role) != domain.RoleRider {
+			logger.AuthFailure("rider role required for bearer ws")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":"forbidden"}`))
 			return
 		}
 	} else if enableDriverIDHeader {
