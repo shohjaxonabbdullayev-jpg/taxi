@@ -85,7 +85,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
-			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, cfg.EnableDriverIDHeader, c.Writer, c.Request)
+			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, cfg.EnableDriverIDHeader, riderAuthSvc, c.Writer, c.Request)
 		})
 	}
 
