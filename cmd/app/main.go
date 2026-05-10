@@ -22,6 +22,7 @@ import (
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/riderappnotifications"
 	"taxi-mvp/internal/db/riderlogincodes"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/server"
@@ -57,6 +58,9 @@ func main() {
 	}
 	if err := riderlogincodes.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("rider login codes schema: %v", err)
+	}
+	if err := riderappnotifications.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("rider app notifications schema: %v", err)
 	}
 	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
 		log.Printf("accounting: signup promo backfill: %v", err)
