@@ -65,6 +65,9 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	if riderAuthSvc != nil {
 		handlers.RegisterRiderAuthRoutes(r, handlers.RiderAuthDeps{Service: riderAuthSvc})
 		handlers.RegisterRiderAppLegalRoutes(r, db, riderAuthSvc)
+		handlers.RegisterRiderNotificationRoutes(r, handlers.RiderNotificationDeps{
+			DB: db, RiderAuthSvc: riderAuthSvc,
+		})
 	}
 	if riderAuthSvc != nil && riderReqSvc != nil {
 		handlers.RegisterRiderRequestRoutes(r, handlers.RiderRequestDeps{
