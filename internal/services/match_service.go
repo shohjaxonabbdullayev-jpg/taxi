@@ -24,10 +24,11 @@ const (
 	dispatchBatchSize     = 3  // send request to N nearest drivers per batch
 	dispatchBatchWaitSec  = 60 // wait this many seconds for any driver in the batch to accept before trying next batch
 	liveLocationOrderHint = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
-	// Live location considered active only when last_live_location_at within 90s (same as dispatch).
-	liveLocationActiveSeconds = 90
-	// DriverLocationFreshnessSeconds: only drivers with last_seen_at within this many seconds are eligible for dispatch.
-	driverLocationFreshnessSeconds = 90
+	// Live location considered active only when last_live_location_at within this many seconds (aligned with dispatch freshness).
+	liveLocationActiveSeconds = 120
+	// DriverLocationFreshnessSeconds: Telegram live or app GPS must be updated within this window for dispatch.
+	// 120s avoids dropping drivers whose last ping is slightly older than a tight 90s cutoff while still excluding stale rows.
+	driverLocationFreshnessSeconds = 120
 
 	// To prevent "output too large" issues, never log large slices verbatim.
 	logSliceMaxItems = 20
@@ -207,12 +208,20 @@ func (s *MatchService) requestStillDispatchable(ctx context.Context, requestID s
 func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string) {
 	var pickupLat, pickupLng, radiusKm float64
 	var status string
+	var createdAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT pickup_lat, pickup_lng, radius_km, status FROM ride_requests WHERE id = ?1`,
-		requestID).Scan(&pickupLat, &pickupLng, &radiusKm, &status)
+		SELECT pickup_lat, pickup_lng, radius_km, status, COALESCE(created_at,'') FROM ride_requests WHERE id = ?1`,
+		requestID).Scan(&pickupLat, &pickupLng, &radiusKm, &status, &createdAt)
 	if err != nil || status != domain.RequestStatusPending {
 		return
 	}
+	if !utils.PickupCoordsDispatchable(pickupLat, pickupLng) {
+		log.Printf("dispatch_audit: request=%s skipped invalid_pickup lat=%.6f lng=%.6f created_at=%s",
+			requestID, pickupLat, pickupLng, truncateLog(createdAt, 32))
+		return
+	}
+	log.Printf("dispatch_audit: request=%s phase=candidate_query created_at=%s pickup=(%.6f,%.6f) radius_km=%.3f freshness_sec=%d",
+		requestID, truncateLog(createdAt, 32), pickupLat, pickupLng, radiusKm, driverLocationFreshnessSeconds)
 	var estPrice int64
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(estimated_price, 0) FROM ride_requests WHERE id = ?1`, requestID).Scan(&estPrice)
 	if estPrice <= 0 {
@@ -242,14 +251,19 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		balanceCond = " AND d.balance > 0"
 	}
 	placeholders := "?"
-	// Use only anonymous '?' placeholders (avoid mixing ?1/?2 with '?', which can miscount in libSQL).
-	args := []interface{}{locationFreshSinceStr, locationFreshSinceStr}
 	for i := 1; i < len(gridIDs); i++ {
 		placeholders += ",?"
 	}
+	argsApp := []interface{}{locationFreshSinceStr, locationFreshSinceStr, locationFreshSinceStr}
 	for _, g := range gridIDs {
-		args = append(args, g)
+		argsApp = append(argsApp, g)
 	}
+	argsTelegram := []interface{}{locationFreshSinceStr}
+	for _, g := range gridIDs {
+		argsTelegram = append(argsTelegram, g)
+	}
+	// Eligible if (fresh Telegram live) OR (fresh app GPS) OR (HTTP live path: last_seen_at fresh and coordinates present).
+	// Third arm avoids missing native drivers when last_live_location_at lagged but POST /driver/location updated last_seen_at.
 	queryApp := `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
@@ -262,6 +276,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?)
 			 OR (COALESCE(d.app_location_active, 0) = 1
 				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?)
+			 OR (d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?)
 		  )` + `
 		  AND d.verification_status = 'approved'
 		  AND ` + legal.SQLDriverDispatchLegalOK + `
@@ -291,11 +306,11 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		  AND (d.grid_id IN (` + placeholders + `) OR d.grid_id IS NULL)
 		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
 
-	rows, err := s.db.QueryContext(ctx, queryApp, args...)
+	rows, err := s.db.QueryContext(ctx, queryApp, argsApp...)
 	appColsOK := true
 	if err != nil && isMissingColumnErr(err) {
 		appColsOK = false
-		rows, err = s.db.QueryContext(ctx, queryTelegramOnly, args...)
+		rows, err = s.db.QueryContext(ctx, queryTelegramOnly, argsTelegram...)
 	}
 	if err != nil {
 		log.Printf("match_service: dispatch query: %v", truncateLog(err.Error(), logMaxChars))
@@ -303,7 +318,9 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	}
 	defer rows.Close()
 	var candidates []driverCandidate
+	var sqlGridRows, skipEffZero, skipTooFar int
 	for rows.Next() {
+		sqlGridRows++
 		var uID int64
 		var telegramID int64
 		var lat, lng sql.NullFloat64
@@ -332,8 +349,19 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		}
 		eLat, eLng := GetEffectiveDriverLocation(loc)
 		log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+		if eLat == 0 && eLng == 0 {
+			skipEffZero++
+			if s.cfg != nil && s.cfg.DispatchDebug {
+				log.Printf("dispatch_audit: request=%s candidate_skip driver=%d reason=no_effective_location", requestID, uID)
+			}
+			continue
+		}
 		distKm := utils.HaversineMeters(pickupLat, pickupLng, eLat, eLng) / 1000
 		if distKm > radiusKm {
+			skipTooFar++
+			if s.cfg != nil && s.cfg.DispatchDebug {
+				log.Printf("dispatch_audit: request=%s candidate_skip driver=%d reason=outside_radius dist_km=%.3f radius_km=%.3f", requestID, uID, distKm, radiusKm)
+			}
 			continue
 		}
 		candidates = append(candidates, driverCandidate{
@@ -356,7 +384,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		for _, c := range candidates {
 			ids = append(ids, c.UserID)
 		}
-		log.Printf("dispatch_audit: request=%s candidate_drivers=%d driver_ids_sample=%s", requestID, len(candidates), sampleInt64(ids, logSliceMaxItems))
+		log.Printf("dispatch_audit: request=%s sql_grid_rows=%d skip_eff_loc_zero=%d skip_outside_radius=%d candidate_drivers_in_radius=%d driver_ids_sample=%s",
+			requestID, sqlGridRows, skipEffZero, skipTooFar, len(candidates), sampleInt64(ids, logSliceMaxItems))
 		if s.cfg != nil && s.cfg.DispatchDebug {
 			log.Printf("dispatch_debug: request=%s candidate_drivers=%d ids_sample=%s", requestID, len(candidates), sampleInt64(ids, logSliceMaxItems))
 		}
@@ -606,9 +635,10 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 			telegramFresh = time.Since(t) <= driverLocationFreshnessSeconds*time.Second
 		}
 	}
-	if !appFresh && !telegramFresh {
+	httpSeenFresh := isFreshWithin(lastSeenAt, driverLocationFreshnessSeconds)
+	if !appFresh && !telegramFresh && !httpSeenFresh {
 		if s.cfg != nil && s.cfg.DispatchDebug {
-			log.Printf("dispatch_debug: driver=%d skipped: stale_location app_fresh=%v telegram_fresh=%v", driverUserID, appFresh, telegramFresh)
+			log.Printf("dispatch_debug: driver=%d skipped: stale_location app_fresh=%v telegram_fresh=%v http_seen_fresh=%v", driverUserID, appFresh, telegramFresh, httpSeenFresh)
 		}
 		return
 	}
@@ -623,21 +653,12 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		}
 		return
 	}
-	// Limit to recent waiting requests to avoid heavy scans.
-	windowSec := s.cfg.RequestExpiresSeconds
-	if windowSec <= 0 || windowSec > 3600 {
-		windowSec = 600
-	}
-	cutoff := time.Now().Add(-time.Duration(windowSec) * time.Second).UTC().Format("2006-01-02 15:04:05")
-	args := []interface{}{domain.RequestStatusPending, cutoff}
-	args = append(args, driverUserID)
-	// Only send requests that are still within TTL (expires_at > now) AND are dispatch-ready
-	// (destination picked + confirmed + estimate > 0). Backward compatible if destination_confirmed column is missing.
+	args := []interface{}{domain.RequestStatusPending, driverUserID}
+	// Pending requests still dispatchable: TTL is expires_at only (do not require created_at after driver went online).
 	qStrict := `
 		SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, r.pickup_grid
 		FROM ride_requests r
 		WHERE r.status = ?
-		  AND r.created_at >= ?
 		  AND r.expires_at > datetime('now')
 		  AND r.drop_lat IS NOT NULL AND r.drop_lng IS NOT NULL
 		  AND COALESCE(r.estimated_price, 0) > 0
@@ -647,7 +668,6 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, r.pickup_grid
 		FROM ride_requests r
 		WHERE r.status = ?
-		  AND r.created_at >= ?
 		  AND r.expires_at > datetime('now')
 		  AND r.drop_lat IS NOT NULL AND r.drop_lng IS NOT NULL
 		  AND COALESCE(r.estimated_price, 0) > 0

@@ -197,11 +197,12 @@ func (s *RiderRequestAppService) ConfirmRequest(ctx context.Context, riderUserID
 
 	var est int64
 	var st string
+	var pickupLat, pickupLng float64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(estimated_price, 0), status
+		SELECT COALESCE(estimated_price, 0), status, pickup_lat, pickup_lng
 		FROM ride_requests
 		WHERE id = ?1 AND rider_user_id = ?2 AND expires_at > datetime('now')`,
-		requestID, riderUserID).Scan(&est, &st)
+		requestID, riderUserID).Scan(&est, &st, &pickupLat, &pickupLng)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrRiderRequestNotFound
 	}
@@ -211,6 +212,11 @@ func (s *RiderRequestAppService) ConfirmRequest(ctx context.Context, riderUserID
 	if st != domain.RequestStatusPending || est <= 0 {
 		return ErrRiderRequestConflictState
 	}
+	if !utils.PickupCoordsDispatchable(pickupLat, pickupLng) {
+		log.Printf("rider_request_app: confirm request=%s rejected invalid pickup lat=%.6f lng=%.6f", requestID, pickupLat, pickupLng)
+		return ErrRiderRequestInvalidCoords
+	}
+	log.Printf("rider_request_app: confirm request=%s pickup=(%.6f,%.6f) est=%d", requestID, pickupLat, pickupLng, est)
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE ride_requests SET destination_confirmed = 1

@@ -513,21 +513,28 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 				Name:  riderName.String,
 			}
 		}
-		if driverPhone.Valid && driverPhone.String != "" || driverCarType.Valid && driverCarType.String != "" || driverColor.Valid && driverColor.String != "" || driverPlate.Valid && driverPlate.String != "" {
+		// driver_info only when a real assigned driver is present (same as nested driver). Avoids WAITING/no-driver showing junk or rider-like fields.
+		if driverObj != nil {
 			plate := strings.TrimSpace(driverPlateNumber.String)
 			if plate == "" {
 				plate = strings.TrimSpace(driverPlate.String)
 			}
-			resp.DriverInfo = &struct {
-				Phone   string `json:"phone,omitempty"`
-				CarType string `json:"car_type,omitempty"`
-				Color   string `json:"color,omitempty"`
-				Plate   string `json:"plate,omitempty"`
-			}{
-				Phone:   driverPhone.String,
-				CarType: driverCarType.String,
-				Color:   driverColor.String,
-				Plate:   plate,
+			phone := strings.TrimSpace(driverPhone.String)
+			if phone == "" && driverUserPhone.Valid {
+				phone = strings.TrimSpace(driverUserPhone.String)
+			}
+			if phone != "" || strings.TrimSpace(driverCarType.String) != "" || strings.TrimSpace(driverColor.String) != "" || plate != "" {
+				resp.DriverInfo = &struct {
+					Phone   string `json:"phone,omitempty"`
+					CarType string `json:"car_type,omitempty"`
+					Color   string `json:"color,omitempty"`
+					Plate   string `json:"plate,omitempty"`
+				}{
+					Phone:   phone,
+					CarType: strings.TrimSpace(driverCarType.String),
+					Color:   strings.TrimSpace(driverColor.String),
+					Plate:   plate,
+				}
 			}
 		}
 		c.JSON(http.StatusOK, resp)

@@ -200,21 +200,57 @@ func riderAppGetActiveTrip(deps RiderTripDeps) gin.HandlerFunc {
 			ORDER BY rowid DESC
 			LIMIT 1
 		`, uid).Scan(&tripID, &status)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				c.JSON(http.StatusOK, gin.H{"trip": nil})
-				return
-			}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"trip": gin.H{
-				"id":     tripID,
-				"status": status,
-			},
-		})
+		if err == nil {
+			c.JSON(http.StatusOK, gin.H{
+				"trip": gin.H{
+					"id":     tripID,
+					"status": status,
+				},
+			})
+			return
+		}
+
+		// After confirm, trip row may not exist until a driver accepts — surface dispatch state so clients do not see trip: null only.
+		var pendingID string
+		qStrict := `
+			SELECT id FROM ride_requests
+			WHERE rider_user_id = ?1 AND status = 'PENDING' AND expires_at > datetime('now')
+			  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL AND COALESCE(estimated_price, 0) > 0
+			  AND COALESCE(destination_confirmed, 0) = 1
+			ORDER BY rowid DESC LIMIT 1`
+		qLegacy := `
+			SELECT id FROM ride_requests
+			WHERE rider_user_id = ?1 AND status = 'PENDING' AND expires_at > datetime('now')
+			  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL AND COALESCE(estimated_price, 0) > 0
+			ORDER BY rowid DESC LIMIT 1`
+		err2 := deps.DB.QueryRowContext(ctx, qStrict, uid).Scan(&pendingID)
+		if err2 != nil && riderTripIsMissingColumnErr(err2) {
+			err2 = deps.DB.QueryRowContext(ctx, qLegacy, uid).Scan(&pendingID)
+		}
+		if err2 == nil && strings.TrimSpace(pendingID) != "" {
+			c.JSON(http.StatusOK, gin.H{
+				"trip": nil,
+				"pending_dispatch": gin.H{
+					"request_id": pendingID,
+					"status":     "PENDING_DISPATCH",
+				},
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"trip": nil})
 	}
+}
+
+func riderTripIsMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
 }
 
 func riderAppCancelTripByPath(deps RiderTripDeps) gin.HandlerFunc {
