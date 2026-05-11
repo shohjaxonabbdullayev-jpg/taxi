@@ -3,7 +3,10 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,31 +20,93 @@ func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotap
 	if db == nil || riderBot == nil {
 		return
 	}
-	// Conservative rate: 10 msg/s with small bursts.
+	// Conservative base rate: ~10 msg/s. On 429, pause according to retry_after.
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
+
+	var globalNext time.Time
+	perChatNext := make(map[int64]time.Time)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			deliverOne(ctx, db, riderBot)
+			now := time.Now()
+			if globalNext.After(now) {
+				continue
+			}
+			// Pick a small batch so we can skip chats currently in cooldown without spinning on the same row.
+			cands, err := pickBroadcastCandidates(ctx, db, 50)
+			if err != nil {
+				if err != sql.ErrNoRows {
+					log.Printf("broadcast fanout: pick: %v", err)
+				}
+				continue
+			}
+			if len(cands) == 0 {
+				continue
+			}
+
+			var chosen *broadcastCandidate
+			for i := range cands {
+				ch := cands[i].ChatID
+				if ch == 0 {
+					continue
+				}
+				if next, ok := perChatNext[ch]; ok && next.After(now) {
+					continue
+				}
+				if strings.TrimSpace(cands[i].Body) == "" || strings.TrimSpace(cands[i].BroadcastID) == "" {
+					continue
+				}
+				chosen = &cands[i]
+				break
+			}
+			if chosen == nil {
+				continue
+			}
+
+			if err := sendBroadcastCandidate(riderBot, *chosen); err != nil {
+				if retryAfter := telegramRetryAfterSeconds(err); retryAfter > 0 {
+					wait := time.Duration(retryAfter)*time.Second + 250*time.Millisecond
+					next := time.Now().Add(wait)
+					globalNext = next
+					perChatNext[chosen.ChatID] = next
+					log.Printf("broadcast fanout: 429 retry_after=%ds broadcast_id=%s chat_id=%d", retryAfter, chosen.BroadcastID, chosen.ChatID)
+					continue
+				}
+				// Non-429: backoff this chat briefly (blocked bot, deactivated user, etc.).
+				perChatNext[chosen.ChatID] = time.Now().Add(10 * time.Second)
+				log.Printf("broadcast fanout: send broadcast_id=%s chat_id=%d: %v", chosen.BroadcastID, chosen.ChatID, err)
+				continue
+			}
+
+			// Mark delivered (idempotent primary key).
+			_, _ = db.ExecContext(ctx, `
+				INSERT OR IGNORE INTO broadcast_telegram_deliveries (broadcast_id, chat_id, delivered_at)
+				VALUES (?1, ?2, datetime('now'))`, chosen.BroadcastID, chosen.ChatID)
 		}
 	}
 }
 
-func deliverOne(ctx context.Context, db *sql.DB, bot *tgbotapi.BotAPI) {
-	// Pick one undelivered (broadcast_id, chat_id) pair.
-	var (
-		broadcastID string
-		chatID      int64
-		title       sql.NullString
-		body        string
-		mediaURL    sql.NullString
-		mediaType   sql.NullString
-	)
-	err := db.QueryRowContext(ctx, `
+type broadcastCandidate struct {
+	BroadcastID string
+	ChatID      int64
+	Title       sql.NullString
+	Body        string
+	MediaURL    sql.NullString
+	MediaType   sql.NullString
+}
+
+func pickBroadcastCandidates(ctx context.Context, db *sql.DB, limit int) ([]broadcastCandidate, error) {
+	if db == nil {
+		return nil, sql.ErrConnDone
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := db.QueryContext(ctx, `
 		WITH candidates AS (
 			SELECT b.id AS broadcast_id, u.telegram_id AS chat_id
 			FROM broadcast_posts b
@@ -53,7 +118,7 @@ func deliverOne(ctx context.Context, db *sql.DB, bot *tgbotapi.BotAPI) {
 			  AND COALESCE(b.audience, 'all_riders') = 'all_riders'
 			  AND d.broadcast_id IS NULL
 			ORDER BY datetime(b.created_at) DESC, b.id DESC, u.id ASC
-			LIMIT 1
+			LIMIT ?1
 		)
 		SELECT c.broadcast_id,
 		       c.chat_id,
@@ -63,51 +128,81 @@ func deliverOne(ctx context.Context, db *sql.DB, bot *tgbotapi.BotAPI) {
 		       b.media_type
 		FROM candidates c
 		JOIN broadcast_posts b ON b.id = c.broadcast_id
-		LIMIT 1
-	`,).Scan(&broadcastID, &chatID, &title, &body, &mediaURL, &mediaType)
+	`, limit)
 	if err != nil {
-		if err != sql.ErrNoRows {
-			log.Printf("broadcast fanout: pick: %v", err)
-		}
-		return
+		return nil, err
 	}
+	defer rows.Close()
 
-	body = strings.TrimSpace(body)
-	if body == "" || broadcastID == "" || chatID == 0 {
-		return
+	var out []broadcastCandidate
+	for rows.Next() {
+		var c broadcastCandidate
+		if err := rows.Scan(&c.BroadcastID, &c.ChatID, &c.Title, &c.Body, &c.MediaURL, &c.MediaType); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func sendBroadcastCandidate(bot *tgbotapi.BotAPI, c broadcastCandidate) error {
+	if bot == nil || c.ChatID == 0 {
+		return nil
+	}
+	body := strings.TrimSpace(c.Body)
+	if body == "" || strings.TrimSpace(c.BroadcastID) == "" {
+		return nil
 	}
 
 	// Telegram caption limit is ~1024; keep it safe.
 	const captionMaxRunes = 900
 	caption := truncateRunes(body, captionMaxRunes)
 
-	var sendErr error
-	mt := strings.ToLower(strings.TrimSpace(mediaType.String))
-	if mediaURL.Valid && strings.TrimSpace(mediaURL.String) != "" && mt == "image" {
-		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(strings.TrimSpace(mediaURL.String)))
+	mt := strings.ToLower(strings.TrimSpace(c.MediaType.String))
+	if c.MediaURL.Valid && strings.TrimSpace(c.MediaURL.String) != "" && mt == "image" {
+		msg := tgbotapi.NewPhoto(c.ChatID, tgbotapi.FileURL(strings.TrimSpace(c.MediaURL.String)))
 		msg.Caption = caption
-		_, sendErr = bot.Send(msg)
-	} else if mediaURL.Valid && strings.TrimSpace(mediaURL.String) != "" && mt == "video" {
-		msg := tgbotapi.NewVideo(chatID, tgbotapi.FileURL(strings.TrimSpace(mediaURL.String)))
+		_, err := bot.Send(msg)
+		return err
+	}
+	if c.MediaURL.Valid && strings.TrimSpace(c.MediaURL.String) != "" && mt == "video" {
+		msg := tgbotapi.NewVideo(c.ChatID, tgbotapi.FileURL(strings.TrimSpace(c.MediaURL.String)))
 		msg.Caption = caption
-		_, sendErr = bot.Send(msg)
-	} else {
-		text := caption
-		if title.Valid && strings.TrimSpace(title.String) != "" {
-			text = strings.TrimSpace(title.String) + "\n\n" + caption
-		}
-		_, sendErr = bot.Send(tgbotapi.NewMessage(chatID, text))
+		_, err := bot.Send(msg)
+		return err
 	}
-	if sendErr != nil {
-		// On 429 etc, just retry later (do not mark delivered).
-		log.Printf("broadcast fanout: send broadcast_id=%s chat_id=%d: %v", broadcastID, chatID, sendErr)
-		return
+	text := caption
+	if c.Title.Valid && strings.TrimSpace(c.Title.String) != "" {
+		text = strings.TrimSpace(c.Title.String) + "\n\n" + caption
 	}
+	_, err := bot.Send(tgbotapi.NewMessage(c.ChatID, text))
+	return err
+}
 
-	// Mark delivered (idempotent primary key).
-	_, _ = db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO broadcast_telegram_deliveries (broadcast_id, chat_id, delivered_at)
-		VALUES (?1, ?2, datetime('now'))`, broadcastID, chatID)
+var retryAfterRe = regexp.MustCompile(`(?i)\bretry after (\d+)\b`)
+
+func telegramRetryAfterSeconds(err error) int {
+	if err == nil {
+		return 0
+	}
+	// Prefer typed telegram-bot-api error when available.
+	var tgErr tgbotapi.Error
+	if errors.As(err, &tgErr) {
+		if tgErr.ResponseParameters.RetryAfter > 0 {
+			return tgErr.ResponseParameters.RetryAfter
+		}
+	}
+	// Fallback: parse message ("Too Many Requests: retry after X").
+	m := retryAfterRe.FindStringSubmatch(err.Error())
+	if len(m) == 2 {
+		if n, e := strconv.Atoi(strings.TrimSpace(m[1])); e == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func truncateRunes(s string, max int) string {
