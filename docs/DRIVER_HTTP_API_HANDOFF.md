@@ -28,6 +28,7 @@
 |--------|------|--------|
 | `GET` | `/health` | Optional; plain `OK` is fine. |
 | `GET` | `/driver/available-requests` | Poll for offers + `assigned_trip`; merge queue aliases; dedupe by `request_id`. |
+| `GET` | `/driver/trips` | **Read-only** trip history for the logged-in driver (finished + cancelled rows only). Same auth as `/driver/available-requests`. **200** JSON: `{ "trips": [ ... ] }`. Each element includes `trip_id` (and aliases `id`, `uuid`), `status`, ISO **RFC3339** timestamps when present (`started_at`, `finished_at`, `cancelled_at`), fare in soʻm as `fare_som` / `price` / `total_som`, and optional `commission_som` when a commission ledger row exists for that trip. Query: `limit` (default **50**, max **100**), `offset` (default **0**). Active trips (`WAITING`, `ARRIVED`, `STARTED`) are omitted; use `GET /driver/available-requests` + `GET /trip/:id` for the live ride. |
 | `POST` | `/driver/accept-request` | Body: `{"request_id":"..."}` and/or `{"trip_id":"..."}`; **409** on conflict. |
 | `POST` | `/driver/location` | Body: `lat`, `lng`, optional `accuracy` (number), optional `timestamp` (Unix seconds, int — GPS fix). Do **not** require ISO timestamps. Success **200** with e.g. `{"ok":true}`. Server uses **UTC wall clock** for `last_seen_at` / `last_live_location_at` / `live_location_active`; optional client timestamp is accepted but **must not** block row updates / freshness (GPS lag). Accuracy **> 50** m may skip trip polyline / WS only, not dispatch freshness (see `DRIVER_CLIENT.md`). |
 | `POST` | `/driver/offline` | Call when the driver toggles **OFFLINE** in the app (mirrors Telegram “stop live”). Stops dispatch/admin “online + live” immediately; stopping location pings alone does not. |
@@ -85,8 +86,9 @@ Allow headers including `Content-Type`, `X-Driver-Id`, `X-Telegram-Init-Data`, a
 1. `POST /driver/location` returns **2xx** for valid driver with GPS body; **403** only for auth/legal, not for “stale GPS timestamp” or coarse accuracy blocking dispatch rows (**2c0c900+** behavior).
 2. **`POST /driver/offline`** is called from the app **OFFLINE** toggle so admin map / dispatch match UI (stopping location pings alone is insufficient).
 3. `GET /driver/available-requests` returns queue + `assigned_trip` shapes documented in `DRIVER_CLIENT.md`.
-4. WebSocket auth and trip lifecycle events match `DRIVER_CLIENT.md`.
-5. After **`TryAssign`** (app or bot), Telegram offer messages for that request are cleaned up for **all** notified drivers including the accepter (**assignment_service**).
+4. `GET /driver/trips` with `X-Driver-Id` returns **200** and a `trips` array (may be empty); see the routes table above for field names.
+5. WebSocket auth and trip lifecycle events match `DRIVER_CLIENT.md`.
+6. After **`TryAssign`** (app or bot), Telegram offer messages for that request are cleaned up for **all** notified drivers including the accepter (**assignment_service**).
 
 ---
 

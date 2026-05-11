@@ -32,6 +32,7 @@
 - `GET /driver/promo-program` — driver auth; JSON promo program status (`promo_balance`, signup flag, first-three trip bonus progress).
 - `GET /driver/referral-status` — driver auth; JSON for referred drivers: inviter id, finished trip count, threshold 3, whether inviter reward was already granted.
 - `GET /driver/available-requests` — driver auth; JSON with optional `assigned_trip` and queue arrays (see README).
+- `GET /driver/trips` — driver auth; read-only JSON `{ "trips": [...] }` for finished/cancelled trips (native **Safarlar tarixi**); see `docs/DRIVER_HTTP_API_HANDOFF.md`.
 - `POST /driver/accept-request` — driver auth; body `{ "request_id" }` and/or `{ "trip_id" }` (idempotent “already assigned” when only `trip_id` matches); uses **`AssignmentService.TryAssign`** (same as driver bot).
 - `GET /ws?trip_id=...` — **initData** (header or query) **or** `X-Driver-Id` when **`ENABLE_DRIVER_ID_HEADER`** (driver on trip only); only rider or assigned driver may connect.
 
