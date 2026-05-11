@@ -37,7 +37,7 @@
 | `POST` | `/trip/start` | Body: `{"trip_id":"..."}` only. |
 | `POST` | `/trip/finish` | Body: `{"trip_id":"..."}` only. |
 | `POST` | `/trip/cancel/driver` | Body: `{"trip_id":"..."}` — driver cancel. |
-| `GET` | `/ws/driver-dispatch` | Driver dispatch websocket “poke” (best-effort). Auth same as other driver routes. On connect: `{"type":"hello"}`. When new offers may be available: `{"type":"dispatch_changed","emitted_at":"<RFC3339 UTC>"}`. Clients should refetch **`GET /driver/available-requests`** (source of truth). |
+| `GET` | `/ws/driver-dispatch` | Driver dispatch websocket “poke” (best-effort). **Auth on the upgrade GET** uses the same chain as HTTP driver routes: optional query `driver_id` / `x_driver_id` / `init_data` are copied onto **`X-Driver-Id`** / **`X-Telegram-Init-Data`** when those headers are absent, then **`tryDriverID` + `RequireDriverAuth`** run (identical to e.g. `GET /driver/available-requests`). On connect: `{"type":"hello"}`. When new offers may be available: `{"type":"dispatch_changed","emitted_at":"<RFC3339 UTC>"}`. Clients should refetch **`GET /driver/available-requests`** (source of truth). |
 | `GET` | `/legal/active` | When **403** `LEGAL_ACCEPTANCE_REQUIRED`. |
 | `POST` | `/legal/accept` | Accept active legal docs (JSON per server schema). |
 | `GET` | `/driver/promo-program` | Promo / program JSON. |

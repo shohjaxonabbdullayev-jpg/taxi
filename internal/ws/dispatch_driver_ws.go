@@ -16,7 +16,8 @@ type dispatchClient struct {
 }
 
 // ServeDriverDispatchWs upgrades to a driver-only websocket and streams dispatch poke events.
-// Auth is expected to be performed by HTTP middleware (tryDriverID + driverAuth).
+// Auth is performed on the upgrade request by Gin middleware (mirror query → headers, tryDriverID,
+// RequireDriverAuth) — same rules as other driver routes.
 //
 // On connect, sends: { "type": "hello" }
 // On change, sends: { "type": "dispatch_changed", "emitted_at": "<RFC3339 UTC>" }

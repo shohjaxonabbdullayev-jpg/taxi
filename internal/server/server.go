@@ -16,6 +16,26 @@ import (
 	"taxi-mvp/internal/ws"
 )
 
+// mirrorDriverWSCredentialsIntoHeaders copies query-only credentials onto the canonical HTTP headers
+// before tryDriverID + RequireDriverAuth run, so the WebSocket upgrade is authenticated like other
+// driver GET routes (X-Driver-Id, X-Telegram-Init-Data). If headers are already set, query is ignored.
+func mirrorDriverWSCredentialsIntoHeaders(c *gin.Context) {
+	if strings.TrimSpace(c.GetHeader(auth.HeaderDriverID)) == "" {
+		for _, key := range []string{"driver_id", "x_driver_id"} {
+			if q := strings.TrimSpace(c.Query(key)); q != "" {
+				c.Request.Header.Set(auth.HeaderDriverID, q)
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(c.GetHeader(auth.HeaderInitData)) == "" {
+		if q := strings.TrimSpace(c.Query("init_data")); q != "" {
+			c.Request.Header.Set(auth.HeaderInitData, q)
+		}
+	}
+	c.Next()
+}
+
 // New creates a Gin engine with API routes and optional webapp static files.
 // hub can be nil; if set, GET /ws is registered. fareSvc can be nil (then fare uses config only).
 // matchSvc and driverBot are used for driver auto-availability and notifications (e.g. after trip finish + Mini App location).
@@ -97,7 +117,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 		})
 	}
 	// Always register dispatch websocket; it is independent of the trip hub.
-	r.GET("/ws/driver-dispatch", tryDriverID, driverAuth, func(c *gin.Context) {
+	r.GET("/ws/driver-dispatch", mirrorDriverWSCredentialsIntoHeaders, tryDriverID, driverAuth, func(c *gin.Context) {
 		ws.ServeDriverDispatchWs(dispatchHub, c.Writer, c.Request)
 	})
 
