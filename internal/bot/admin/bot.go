@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/google/uuid"
 	"taxi-mvp/internal/accounting"
+	"taxi-mvp/internal/cloudinary"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
@@ -18,6 +22,8 @@ import (
 
 const (
 	btnFareMenu       = "💰 Нарх белгилаш"
+	btnPublishPost    = "📣 Post publish"
+	btnCancelPublish  = "❎ Бекор қилиш"
 	btnBaseFare       = "🚕 Старт нархи"
 	btnTier0_1        = "1️⃣ 0–1 км нархи"
 	btnTier1_2        = "2️⃣ 1–2 км нархи"
@@ -32,6 +38,37 @@ type placeAddState struct {
 	mu        sync.Mutex
 	step      map[int64]string // telegram user id -> "name" | "location"
 	tempName  map[int64]string
+}
+
+type publishState struct {
+	mu      sync.Mutex
+	await   map[int64]bool // admin telegram id -> awaiting post content
+}
+
+func (s *publishState) setAwait(telegramID int64, v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.await == nil {
+		s.await = make(map[int64]bool)
+	}
+	s.await[telegramID] = v
+}
+
+func (s *publishState) isAwait(telegramID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.await == nil {
+		return false
+	}
+	return s.await[telegramID]
+}
+
+func (s *publishState) clear(telegramID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.await != nil {
+		delete(s.await, telegramID)
+	}
 }
 
 func (s *placeAddState) setStep(telegramID int64, step string) {
@@ -113,6 +150,7 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 	log.Printf("admin bot: started @%s (admin_id=%d)", bot.Self.UserName, cfg.AdminID)
 	state := &fareEditState{}
 	placeState := &placeAddState{}
+	pubState := &publishState{}
 	placeRepo := repositories.NewPlaceRepo(db)
 	updates := bot.GetUpdatesChan(tgbotapi.NewUpdate(0))
 	for {
@@ -123,12 +161,12 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 			if !ok {
 				return nil
 			}
-			handleUpdate(bot, cfg, db, fareSvc, driverBot, state, placeState, placeRepo, update)
+			handleUpdate(bot, cfg, db, fareSvc, driverBot, state, placeState, pubState, placeRepo, update)
 		}
 	}
 }
 
-func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc *services.FareService, driverBot *tgbotapi.BotAPI, state *fareEditState, placeState *placeAddState, placeRepo *repositories.PlaceRepo, update tgbotapi.Update) {
+func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc *services.FareService, driverBot *tgbotapi.BotAPI, state *fareEditState, placeState *placeAddState, pubState *publishState, placeRepo *repositories.PlaceRepo, update tgbotapi.Update) {
 	// Handle callback queries (approve/reject driver verification, delete place) first.
 	if update.CallbackQuery != nil {
 		handleCallback(bot, cfg, db, driverBot, update.CallbackQuery, placeRepo)
@@ -147,6 +185,23 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 	}
 	if fromID != cfg.AdminID {
 		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⛔ Сизга рухсат йўқ."))
+		return
+	}
+
+	// Publish flow: awaiting content (text or photo/document with caption).
+	if update.Message != nil && pubState != nil && pubState.isAwait(fromID) {
+		if strings.TrimSpace(update.Message.Text) == "/cancel_publish" || strings.TrimSpace(update.Message.Text) == btnCancelPublish {
+			pubState.clear(fromID)
+			sendMessage(bot, chatID, "❎ Бекор қилинди.")
+			sendMainMenu(bot, chatID)
+			return
+		}
+		if handlePublishMessage(bot, cfg, db, chatID, fromID, update.Message) {
+			pubState.clear(fromID)
+			sendMainMenu(bot, chatID)
+			return
+		}
+		// If message didn't match (e.g. empty), keep waiting.
 		return
 	}
 
@@ -206,7 +261,26 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 	switch text {
 	case "/start":
 		placeState.clear(fromID)
+		if pubState != nil {
+			pubState.clear(fromID)
+		}
 		sendMainMenu(bot, chatID)
+	case "/publish":
+		// Simple v1: next message becomes the broadcast. Send text-only OR send photo/document with caption.
+		if pubState != nil {
+			pubState.setAwait(fromID, true)
+		}
+		sendPublishPrompt(bot, chatID)
+	case "/cancel_publish":
+		if pubState != nil {
+			pubState.clear(fromID)
+		}
+		sendMessage(bot, chatID, "❎ Бекор қилинди.")
+	case btnPublishPost:
+		if pubState != nil {
+			pubState.setAwait(fromID, true)
+		}
+		sendPublishPrompt(bot, chatID)
 	case btnFareMenu:
 		sendFareSubmenu(bot, chatID)
 	case btnAddPlace:
@@ -249,6 +323,120 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 		placeState.clear(fromID)
 		sendMainMenu(bot, chatID)
 	}
+}
+
+func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, chatID, adminTelegramID int64, msg *tgbotapi.Message) bool {
+	if bot == nil || cfg == nil || db == nil || msg == nil {
+		return false
+	}
+	ctx := context.Background()
+
+	// Determine content + optional media file_id.
+	body := strings.TrimSpace(msg.Text)
+	fileID := ""
+	if len(msg.Photo) > 0 {
+		fileID = msg.Photo[len(msg.Photo)-1].FileID
+		if strings.TrimSpace(body) == "" {
+			body = strings.TrimSpace(msg.Caption)
+		}
+	} else if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" {
+		// Accept images sent as files. For v1, we restrict to image/* or empty mime (Telegram sometimes omits).
+		mime := strings.ToLower(strings.TrimSpace(msg.Document.MimeType))
+		if mime == "" || strings.HasPrefix(mime, "image/") {
+			fileID = msg.Document.FileID
+			if strings.TrimSpace(body) == "" {
+				body = strings.TrimSpace(msg.Caption)
+			}
+		} else {
+			sendMessage(bot, chatID, "Фақат расм (image/*) қабул қилинади.")
+			return false
+		}
+	} else if strings.TrimSpace(msg.Caption) != "" {
+		body = strings.TrimSpace(msg.Caption)
+	}
+
+	if strings.TrimSpace(body) == "" {
+		if fileID != "" {
+			// Backward-compat requirement: body always present.
+			body = "Фото"
+		} else {
+			sendMessage(bot, chatID, "Илтимос, матн юборинг.")
+			return false
+		}
+	}
+
+	var (
+		secureURL string
+		publicID  string
+		mediaType string
+		width     int
+		height    int
+		format    string
+	)
+	postID := uuid.NewString()
+	if fileID != "" {
+		// Download from Telegram and upload to Cloudinary.
+		cl := &cloudinary.Client{
+			CloudName: cfg.CloudinaryCloudName,
+			APIKey:    cfg.CloudinaryAPIKey,
+			APISecret: cfg.CloudinaryAPISecret,
+		}
+		if !cl.Enabled() {
+			sendMessage(bot, chatID, "Cloudinary созланмаган (CLOUDINARY_* env).")
+			return false
+		}
+		f, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+		if err != nil || strings.TrimSpace(f.FilePath) == "" {
+			sendMessage(bot, chatID, "Файлни олишда хатолик.")
+			return false
+		}
+		url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", cfg.AdminBotToken, f.FilePath)
+		resp, err := http.Get(url)
+		if err != nil {
+			sendMessage(bot, chatID, "Файлни юклаб олишда хатолик.")
+			return false
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20)) // 20MB soft cap
+		if err != nil || len(b) == 0 {
+			sendMessage(bot, chatID, "Файлни ўқишда хатолик.")
+			return false
+		}
+		folder := "yettiqanot/broadcasts/" + postID
+		up, err := cl.UploadBytes(ctx, "image", folder, "upload.jpg", b)
+		if err != nil {
+			log.Printf("admin bot: cloudinary upload: %v", err)
+			sendMessage(bot, chatID, "Cloudinaryга юклашда хатолик.")
+			return false
+		}
+		secureURL = up.SecureURL
+		publicID = up.PublicID
+		mediaType = strings.TrimSpace(up.ResourceType)
+		width = up.Width
+		height = up.Height
+		format = up.Format
+	}
+
+	// Insert broadcast (published).
+	in := services.BroadcastCreateInput{
+		ID:                  postID,
+		Body:                body,
+		CreatedByTelegramID: adminTelegramID,
+		Audience:            "all_riders",
+		CloudinaryPublicID:  publicID,
+		CloudinarySecureURL: secureURL,
+		MediaType:           mediaType,
+		Width:               width,
+		Height:              height,
+		Format:              format,
+	}
+	if _, err := services.CreateBroadcastPost(ctx, db, in); err != nil {
+		log.Printf("admin bot: create broadcast: %v", err)
+		sendMessage(bot, chatID, "Сақлашда хатолик.")
+		return false
+	}
+	sendMessage(bot, chatID, "✅ Эълон чиқарилди. Телеграм орқали жўнатиш фон режимида бошланди.")
+	return true
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, driverBot *tgbotapi.BotAPI, q *tgbotapi.CallbackQuery, placeRepo *repositories.PlaceRepo) {
@@ -466,12 +654,30 @@ func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 			tgbotapi.NewKeyboardButton(btnFareMenu),
 			tgbotapi.NewKeyboardButton(btnAddPlace),
 		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnPublishPost),
+		),
 	)
 	kb.ResizeKeyboard = true
 	msg := tgbotapi.NewMessage(chatID, "Админ панели. Қуйидаги тугмалардан фойдаланинг:")
 	msg.ReplyMarkup = kb
 	if _, err := bot.Send(msg); err != nil {
 		log.Printf("admin bot: send main menu: %v", err)
+	}
+}
+
+func sendPublishPrompt(bot *tgbotapi.BotAPI, chatID int64) {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnCancelPublish),
+		),
+	)
+	kb.ResizeKeyboard = true
+	kb.OneTimeKeyboard = true
+	m := tgbotapi.NewMessage(chatID, "📝 Янги эълон.\n\nМатн юборинг ёки расм/файл юбориб, captionга матн ёзинг.\n\nБекор қилиш учун қуйидаги тугмани босинг.")
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("admin bot: send publish prompt: %v", err)
 	}
 }
 

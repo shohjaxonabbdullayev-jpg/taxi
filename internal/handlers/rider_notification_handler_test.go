@@ -59,6 +59,21 @@ func setupRiderNotificationTestDB(t *testing.T) *sql.DB {
 		body TEXT NOT NULL,
 		created_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`)
+	exec(`CREATE TABLE broadcast_posts (
+		id TEXT PRIMARY KEY,
+		title TEXT,
+		body TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		status TEXT NOT NULL DEFAULT 'published',
+		created_by_telegram_id INTEGER NOT NULL DEFAULT 0,
+		audience TEXT NOT NULL DEFAULT 'all_riders',
+		cloudinary_public_id TEXT,
+		cloudinary_secure_url TEXT,
+		media_type TEXT,
+		width INTEGER,
+		height INTEGER,
+		format TEXT
+	)`)
 	return db
 }
 

@@ -53,10 +53,43 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 		}
 
 		rows, err := deps.DB.QueryContext(ctx, `
-			SELECT id, title, body, created_at
-			FROM rider_app_notifications
-			WHERE rider_user_id = ?1
-			  AND TRIM(body) != ''
+			SELECT id, title, body, created_at,
+			       cloudinary_secure_url,
+			       cloudinary_public_id,
+			       media_type,
+			       width,
+			       height,
+			       format
+			FROM (
+				SELECT n.id AS id,
+				       n.title AS title,
+				       n.body AS body,
+				       n.created_at AS created_at,
+				       NULL AS cloudinary_secure_url,
+				       NULL AS cloudinary_public_id,
+				       NULL AS media_type,
+				       NULL AS width,
+				       NULL AS height,
+				       NULL AS format
+				FROM rider_app_notifications n
+				WHERE n.rider_user_id = ?1
+				  AND TRIM(n.body) != ''
+				UNION ALL
+				SELECT b.id AS id,
+				       b.title AS title,
+				       b.body AS body,
+				       b.created_at AS created_at,
+				       b.cloudinary_secure_url AS cloudinary_secure_url,
+				       b.cloudinary_public_id AS cloudinary_public_id,
+				       b.media_type AS media_type,
+				       b.width AS width,
+				       b.height AS height,
+				       b.format AS format
+				FROM broadcast_posts b
+				WHERE b.status = 'published'
+				  AND COALESCE(b.audience, 'all_riders') = 'all_riders'
+				  AND TRIM(b.body) != ''
+			)
 			ORDER BY datetime(created_at) DESC, id DESC
 			LIMIT ?2`, uid, limit)
 		if err != nil {
@@ -70,12 +103,23 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 			Title     string `json:"title,omitempty"`
 			Body      string `json:"body"`
 			CreatedAt string `json:"created_at"`
+			ImageURL  string `json:"image_url,omitempty"`
+			Media     *struct {
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+				PublicID string `json:"public_id,omitempty"`
+				Width    int    `json:"width,omitempty"`
+				Height   int    `json:"height,omitempty"`
+				Format   string `json:"format,omitempty"`
+			} `json:"media,omitempty"`
 		}
 		var list []item
 		for rows.Next() {
 			var id, body, createdAt string
 			var title sql.NullString
-			if err := rows.Scan(&id, &title, &body, &createdAt); err != nil {
+			var secureURL, publicID, mediaType, format sql.NullString
+			var width, height sql.NullInt64
+			if err := rows.Scan(&id, &title, &body, &createdAt, &secureURL, &publicID, &mediaType, &width, &height, &format); err != nil {
 				writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
 				return
 			}
@@ -90,6 +134,40 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 			}
 			if title.Valid {
 				it.Title = strings.TrimSpace(title.String)
+			}
+			if secureURL.Valid {
+				u := strings.TrimSpace(secureURL.String)
+				if u != "" {
+					it.ImageURL = u
+					mt := strings.TrimSpace(mediaType.String)
+					if mt == "" {
+						mt = "image"
+					}
+					m := &struct {
+						Type     string `json:"type"`
+						URL      string `json:"url"`
+						PublicID string `json:"public_id,omitempty"`
+						Width    int    `json:"width,omitempty"`
+						Height   int    `json:"height,omitempty"`
+						Format   string `json:"format,omitempty"`
+					}{
+						Type: mt,
+						URL:  u,
+					}
+					if publicID.Valid && strings.TrimSpace(publicID.String) != "" {
+						m.PublicID = strings.TrimSpace(publicID.String)
+					}
+					if width.Valid {
+						m.Width = int(width.Int64)
+					}
+					if height.Valid {
+						m.Height = int(height.Int64)
+					}
+					if format.Valid && strings.TrimSpace(format.String) != "" {
+						m.Format = strings.TrimSpace(format.String)
+					}
+					it.Media = m
+				}
 			}
 			list = append(list, it)
 		}

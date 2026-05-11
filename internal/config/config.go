@@ -14,6 +14,9 @@ type Config struct {
 	RiderBotToken           string
 	DriverBotToken          string
 	DatabaseURL             string
+	CloudinaryCloudName     string
+	CloudinaryAPIKey        string
+	CloudinaryAPISecret     string
 	StartingFee             int     // Base fare when trip starts (so'm)
 	PricePerKm              int     // Per-km rate (so'm)
 	MatchRadiusKm           float64
@@ -58,6 +61,9 @@ func Load() (*Config, error) {
 		RiderBotToken:          getEnv("RIDER_BOT_TOKEN", ""),
 		DriverBotToken:         getEnv("DRIVER_BOT_TOKEN", ""),
 		DatabaseURL:            getDatabaseURL(),
+		CloudinaryCloudName:    strings.TrimSpace(os.Getenv("CLOUDINARY_CLOUD_NAME")),
+		CloudinaryAPIKey:       strings.TrimSpace(os.Getenv("CLOUDINARY_API_KEY")),
+		CloudinaryAPISecret:    strings.TrimSpace(os.Getenv("CLOUDINARY_API_SECRET")),
 		StartingFee:            startingFee,
 		PricePerKm:             pricePerKm,
 		MatchRadiusKm:          matchRadiusKm,

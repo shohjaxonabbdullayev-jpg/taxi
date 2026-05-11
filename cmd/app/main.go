@@ -19,6 +19,7 @@ import (
 	"taxi-mvp/internal/db"
 	"taxi-mvp/internal/db/driverapprepair"
 	"taxi-mvp/internal/db/driverlogincodes"
+	"taxi-mvp/internal/db/broadcasts"
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/legalrepair"
@@ -61,6 +62,9 @@ func main() {
 	}
 	if err := riderappnotifications.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("rider app notifications schema: %v", err)
+	}
+	if err := broadcasts.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("broadcasts schema: %v", err)
 	}
 	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
 		log.Printf("accounting: signup promo backfill: %v", err)
@@ -123,6 +127,7 @@ func main() {
 	go services.RunDriverApprovalNotifier(ctx, database, driverBot)
 	go services.RunDriverAppAutoOfflineWorker(ctx, database)
 	go driverbot.RunLegalReacceptNotifier(ctx, database, driverBot)
+	go services.RunBroadcastFanoutWorker(ctx, database, riderBot, cfg)
 
 	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc, riderAuthSvc, riderReqAppSvc)
 	httpServer := &http.Server{Addr: cfg.APIAddr, Handler: srv}
