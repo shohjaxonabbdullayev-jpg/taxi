@@ -86,11 +86,20 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	riderAuth := auth.RequireRiderAuth(db, cfg.RiderBotToken)
 	appUserAuth := auth.RequireMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)
 
+	// Driver dispatch websocket (best-effort poke). Optional global singleton used by publisher hooks.
+	dispatchHub := ws.NewDispatchHub()
+	ws.DispatchHubDefault = dispatchHub
+	go dispatchHub.Run()
+
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
 			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, cfg.EnableDriverIDHeader, riderAuthSvc, c.Writer, c.Request)
 		})
 	}
+	// Always register dispatch websocket; it is independent of the trip hub.
+	r.GET("/ws/driver-dispatch", tryDriverID, driverAuth, func(c *gin.Context) {
+		ws.ServeDriverDispatchWs(dispatchHub, c.Writer, c.Request)
+	})
 
 	r.GET("/trip/:id", handlers.TripInfo(db, cfg, fareSvc))
 	// Mini App: try X-Driver-Id first so Start/Cancel/Finish work without initData when header is present

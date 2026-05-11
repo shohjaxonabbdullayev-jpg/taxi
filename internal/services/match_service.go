@@ -16,6 +16,7 @@ import (
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/utils"
+	"taxi-mvp/internal/ws"
 )
 
 const (
@@ -505,6 +506,9 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 // BroadcastRequest starts batched priority dispatch (nearest first, 10s per batch, then next batch). Used by rider and radius expansion.
 func (s *MatchService) BroadcastRequest(ctx context.Context, requestID string) error {
 	s.StartPriorityDispatch(ctx, requestID)
+	// Best-effort poke for native driver app: prompt clients to refetch via GET /driver/available-requests.
+	// Must never block or affect dispatch/handler outcomes.
+	ws.NotifyDispatchChanged()
 	return nil
 }
 
