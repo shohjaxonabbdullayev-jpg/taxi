@@ -471,7 +471,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			batchDriverIDs = append(batchDriverIDs, c.UserID)
 		}
 		if len(batchDriverIDs) > 0 {
-			ws.NotifyDispatchChanged()
+			ws.NotifyDispatchChangedBurst()
 		}
 
 		// Wait batchWaitSec for any driver in this batch to accept; poll every second.
@@ -540,13 +540,13 @@ func (s *MatchService) PulseDriverOnlineFromHTTP(ctx context.Context, driverUser
 
 // NotifyDriverOfPendingRequests sends any PENDING ride requests (within this driver's radius) to a driver who just came online.
 // Skips requests already sent to this driver (request_notifications). Does not change existing dispatch logic.
-// A short delay allows a nearly-simultaneous rider request to be committed so the driver receives it.
+// A brief delay allows a nearly-simultaneous rider commit to be visible before querying pending rows.
 // Only sends if the driver's location is fresh (last_seen_at within 90s).
 func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driverUserID int64) {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(800 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 	}
 	var telegramID int64
 	var lat, lng sql.NullFloat64
@@ -773,7 +773,11 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 			log.Printf("match_service: insert pending notification request=%s driver=%d: %v", item.requestID, driverUserID, truncateLog(err.Error(), logMaxChars))
 			continue
 		}
-		time.Sleep(1 * time.Second)
+		ws.NotifyDispatchChangedBurst()
+		// Throttle Telegram sends only; native-app polling rows need no delay between offers.
+		if !appFresh {
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 

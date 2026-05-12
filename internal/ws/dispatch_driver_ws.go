@@ -37,7 +37,7 @@ func ServeDriverDispatchWs(hub *DispatchHub, w http.ResponseWriter, r *http.Requ
 	c := &dispatchClient{
 		hub:  hub,
 		conn: conn,
-		send: make(chan []byte, 16),
+		send: make(chan []byte, 128),
 	}
 
 	if c.hub != nil {

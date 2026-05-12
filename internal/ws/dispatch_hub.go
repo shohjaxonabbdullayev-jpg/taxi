@@ -90,3 +90,15 @@ func NotifyDispatchChanged() {
 	}
 	DispatchHubDefault.NotifyDispatchChanged()
 }
+
+// NotifyDispatchChangedBurst sends several staggered pokes so drivers refetch soon even when a single
+// non-blocking broadcast or full client buffer drops the first message (common under load).
+func NotifyDispatchChangedBurst() {
+	NotifyDispatchChanged()
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		NotifyDispatchChanged()
+		time.Sleep(280 * time.Millisecond)
+		NotifyDispatchChanged()
+	}()
+}
