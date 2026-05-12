@@ -237,9 +237,10 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		log.Printf("dispatch_audit: request=%s skipped (expired or not PENDING)", requestID)
 		return
 	}
-	// Grid prefilter: only look at drivers whose grid is in the 3x3 neighborhood of the pickup.
-	gridIDs := utils.NeighborGridIDs(pickupLat, pickupLng)
+	// Debug only: pickup grid neighborhood (dispatch no longer filters SQL by grid_id — effective
+	// driver GPS can disagree with stored grid_id when Telegram vs native app positions diverge).
 	if s.cfg != nil && s.cfg.DispatchDebug {
+		gridIDs := utils.NeighborGridIDs(pickupLat, pickupLng)
 		log.Printf("dispatch_debug: request=%s pickup=(%.5f,%.5f) grids_count=%d grids=%v", requestID, pickupLat, pickupLng, len(gridIDs), gridIDs)
 	}
 	// Online for dispatch when either:
@@ -251,18 +252,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
 		balanceCond = " AND d.balance > 0"
 	}
-	placeholders := "?"
-	for i := 1; i < len(gridIDs); i++ {
-		placeholders += ",?"
-	}
 	argsApp := []interface{}{locationFreshSinceStr, locationFreshSinceStr, locationFreshSinceStr}
-	for _, g := range gridIDs {
-		argsApp = append(argsApp, g)
-	}
 	argsTelegram := []interface{}{locationFreshSinceStr}
-	for _, g := range gridIDs {
-		argsTelegram = append(argsTelegram, g)
-	}
 	// Eligible if (fresh Telegram live) OR (fresh app GPS) OR (HTTP live path: last_seen_at fresh and coordinates present).
 	// Third arm avoids missing native drivers when last_live_location_at lagged but POST /driver/location updated last_seen_at.
 	queryApp := `
@@ -286,7 +277,6 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
 		  AND d.plate IS NOT NULL AND d.plate != ''
-		  AND (d.grid_id IN (` + placeholders + `) OR d.grid_id IS NULL)
 		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
 
 	queryTelegramOnly := `
@@ -304,7 +294,6 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
 		  AND d.plate IS NOT NULL AND d.plate != ''
-		  AND (d.grid_id IN (` + placeholders + `) OR d.grid_id IS NULL)
 		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
 
 	rows, err := s.db.QueryContext(ctx, queryApp, argsApp...)

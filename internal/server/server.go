@@ -125,7 +125,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	// Mini App: try X-Driver-Id first so Start/Cancel/Finish work without initData when header is present
 	r.POST("/driver/location", tryDriverID, driverAuth, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
 	// Native driver app location (additive). Does not touch Telegram location fields.
-	r.POST("/driver/location/app", tryDriverID, driverAuth, handlers.DriverAppLocation(db))
+	r.POST("/driver/location/app", tryDriverID, driverAuth, handlers.DriverAppLocation(db, matchSvc))
 	r.POST("/driver/offline", tryDriverID, driverAuth, handlers.DriverManualOffline(db))
 	r.POST("/trip/start", tryDriverID, driverAuth, handlers.TripStart(db, tripSvc))
 	r.POST("/trip/arrived", tryDriverID, driverAuth, handlers.TripArrived(db, tripSvc))

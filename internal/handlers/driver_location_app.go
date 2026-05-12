@@ -12,6 +12,7 @@ import (
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/logger"
+	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
 )
 
@@ -32,7 +33,8 @@ func validLatLng(lat, lng float64) bool {
 
 // DriverAppLocation updates ONLY native-app location fields on drivers (additive; Telegram fields untouched).
 // POST /driver/location/app
-func DriverAppLocation(db *sql.DB) gin.HandlerFunc {
+// When matchSvc is non-nil, mirrors POST /driver/location: pulse pending-request dispatch so drivers who only use this endpoint receive offers.
+func DriverAppLocation(db *sql.DB, matchSvc *services.MatchService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -80,6 +82,9 @@ func DriverAppLocation(db *sql.DB) gin.HandlerFunc {
 		if n, _ := res.RowsAffected(); n == 0 {
 			c.JSON(http.StatusNotFound, gin.H{"code": "DRIVER_NOT_FOUND", "message": "driver not found"})
 			return
+		}
+		if matchSvc != nil {
+			matchSvc.PulseDriverOnlineFromHTTP(ctx, driverID)
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
