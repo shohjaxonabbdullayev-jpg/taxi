@@ -481,6 +481,9 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			}
 			batchDriverIDs = append(batchDriverIDs, c.UserID)
 		}
+		if len(batchDriverIDs) > 0 {
+			ws.NotifyDispatchChanged()
+		}
 
 		// Wait batchWaitSec for any driver in this batch to accept; poll every second.
 		for wait := 0; wait < batchWaitSec; wait++ {
@@ -506,9 +509,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 // BroadcastRequest starts batched priority dispatch (nearest first, 10s per batch, then next batch). Used by rider and radius expansion.
 func (s *MatchService) BroadcastRequest(ctx context.Context, requestID string) error {
 	s.StartPriorityDispatch(ctx, requestID)
-	// Best-effort poke for native driver app: prompt clients to refetch via GET /driver/available-requests.
-	// Must never block or affect dispatch/handler outcomes.
-	ws.NotifyDispatchChanged()
+	// WebSocket poke is sent from runPriorityDispatch after request_notifications rows are inserted,
+	// so GET /driver/available-requests sees new offers when native drivers refetch (no Telegram row).
 	return nil
 }
 
